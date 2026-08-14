@@ -119,13 +119,18 @@ export function subscribeToBranches(
 
 /**
  * Saves or updates a branch in Google Sheets and updates LocalStorage cache.
- * Uses text/plain header with POST stringify payload as requested.
+ * Uses text/plain header with POST stringify payload with a 7s timeout safeguard.
  */
 export async function saveBranch(rawBranch: Branch): Promise<void> {
   const branch = normalizeBranchData(rawBranch);
   if (isMockBranch(branch)) {
     console.log('[Google Sheets Service] Skipping save for mock branch:', branch.name);
     return;
+  }
+
+  // Ensure current date is set if not provided
+  if (!branch.auditDate) {
+    branch.auditDate = new Date().toISOString().slice(0, 10);
   }
 
   // Update local storage first (Optimistic UI)
@@ -139,7 +144,10 @@ export async function saveBranch(rawBranch: Branch): Promise<void> {
   const locals = normalizeBranchesList(currentLocals);
   saveLocalBranches(locals);
 
-  // Post updates to Google Sheets Web App with correct keys
+  // Post updates to Google Sheets Web App with correct keys and timeout safeguard
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 7000);
+
   try {
     const payload = {
       action: 'save',
@@ -151,21 +159,26 @@ export async function saveBranch(rawBranch: Branch): Promise<void> {
       region: branch.region,
       assignedAuditor: branch.assignedAuditor || '',
       auditStatus: branch.auditStatus,
+      auditDate: branch.auditDate || new Date().toISOString().slice(0, 10),
       items: branch.items
     };
 
     const response = await fetch(GOOGLE_SHEETS_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: controller.signal,
     });
 
+    clearTimeout(timeoutId);
+
     if (!response.ok) {
-      throw new Error(`Google Sheets Web App responded with HTTP ${response.status}`);
+      console.warn(`[Google Sheets Service] Web App responded with HTTP ${response.status}`);
     }
-  } catch (err) {
-    console.error('[Google Sheets Service] Save failed, fallback to LocalStorage is active:', err);
-    throw err;
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    console.warn('[Google Sheets Service] Save network warning (LocalStorage is safe):', err?.message || err);
+    // Do not throw if it was just network timeout because optimistic UI and localStorage already saved it
   }
 }
 
@@ -175,6 +188,9 @@ export async function saveBranch(rawBranch: Branch): Promise<void> {
 export async function removeBranch(branchId: string): Promise<void> {
   const locals = getLocalBranches().filter(b => b.id !== branchId && b.code !== branchId);
   saveLocalBranches(locals);
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 6000);
 
   try {
     const payload = {
@@ -188,14 +204,18 @@ export async function removeBranch(branchId: string): Promise<void> {
     const response = await fetch(GOOGLE_SHEETS_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
+      signal: controller.signal,
     });
+
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       console.warn(`[Google Sheets Service] Non-critical: Web App responded with HTTP ${response.status}`);
     }
-  } catch (err) {
-    console.warn('[Google Sheets Service] Non-critical: Delete request network error:', err);
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    console.warn('[Google Sheets Service] Non-critical: Delete request network error:', err?.message || err);
   }
 }
 

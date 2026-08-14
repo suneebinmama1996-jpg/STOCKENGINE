@@ -10,6 +10,7 @@ import {
   Copy,
   Check,
   Download,
+  Calendar,
 } from 'lucide-react';
 import { parseMasterFile, downloadSampleExcelTemplate } from '../utils/excelParser';
 
@@ -18,7 +19,8 @@ interface MasterDataUploadModalProps {
   onImportItemsToBranch: (
     branchIdOrNewName: string,
     items: Omit<StockItem, 'id'>[],
-    isNewBranch?: boolean
+    isNewBranch?: boolean,
+    auditDate?: string
   ) => void;
   onClose: () => void;
 }
@@ -33,11 +35,31 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
     branches[0]?.id || 'NEW_BRANCH'
   );
   const [newBranchName, setNewBranchName] = useState('สาขาใหม่ (New Branch)');
+  const [auditDate, setAuditDate] = useState<string>(() => new Date().toISOString().slice(0, 10));
   const [rawJsonText, setRawJsonText] = useState('');
   const [parsedItems, setParsedItems] = useState<Omit<StockItem, 'id'>[]>([]);
   const [copiedSample, setCopiedSample] = useState(false);
   const [loading, setLoading] = useState(false);
   const [fileName, setFileName] = useState('');
+
+  // Preset Date calculations
+  const getThursdayOfWeek = () => {
+    const now = new Date();
+    const day = now.getDay(); // 0 is Sunday, 4 is Thursday
+    const diff = 4 - day;
+    const thursday = new Date(now);
+    thursday.setDate(now.getDate() + diff);
+    return thursday.toISOString().slice(0, 10);
+  };
+
+  const getFridayOfWeek = () => {
+    const now = new Date();
+    const day = now.getDay(); // 0 is Sunday, 5 is Friday
+    const diff = 5 - day;
+    const friday = new Date(now);
+    friday.setDate(now.getDate() + diff);
+    return friday.toISOString().slice(0, 10);
+  };
 
   const sampleJsonStructure = JSON.stringify(
     [
@@ -125,10 +147,15 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
       return;
     }
 
+    const itemsWithDate = parsedItems.map((item) => ({
+      ...item,
+      auditDate: auditDate || new Date().toISOString().slice(0, 10),
+    }));
+
     if (targetBranchOption === 'NEW_BRANCH') {
-      onImportItemsToBranch(newBranchName, parsedItems, true);
+      onImportItemsToBranch(newBranchName, itemsWithDate, true, auditDate);
     } else {
-      onImportItemsToBranch(targetBranchOption, parsedItems, false);
+      onImportItemsToBranch(targetBranchOption, itemsWithDate, false, auditDate);
     }
 
     onClose();
@@ -167,14 +194,15 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-3.5 sm:p-4 space-y-3.5 max-h-[80vh] overflow-y-auto">
-          {/* Target Branch Picker */}
-          <div className="bg-slate-50 p-3 rounded border border-slate-200 space-y-2">
-            <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-              <Building2 className="w-4 h-4 text-blue-600" />
-              <span>เลือกสาขาปลายทางสำหรับนำเข้าข้อมูล:</span>
-            </label>
+          {/* Target Branch & Audit Date Picker */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {/* Target Branch */}
+            <div className="bg-slate-50 p-3 rounded border border-slate-200 space-y-1.5">
+              <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                <Building2 className="w-3.5 h-3.5 text-blue-600" />
+                <span>เลือกสาขาปลายทาง:</span>
+              </label>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               <select
                 value={targetBranchOption}
                 onChange={(e) => setTargetBranchOption(e.target.value)}
@@ -182,7 +210,7 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
               >
                 {branches.map((b, idx) => (
                   <option key={`${b.id}-${idx}`} value={b.id}>
-                    นำเข้าสู่: {b.code} - {b.name}
+                    {b.code} - {b.name}
                   </option>
                 ))}
                 <option value="NEW_BRANCH">➕ สร้างสาขาใหม่ (Create New Branch)</option>
@@ -194,9 +222,52 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
                   placeholder="ระบุชื่อสาขาใหม่..."
                   value={newBranchName}
                   onChange={(e) => setNewBranchName(e.target.value)}
-                  className="w-full bg-white text-xs font-semibold text-slate-900 rounded px-2.5 py-1.5 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  className="w-full bg-white text-xs font-semibold text-slate-900 rounded px-2.5 py-1.5 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 mt-1"
                 />
               )}
+            </div>
+
+            {/* Audit Date & Cycle Picker */}
+            <div className="bg-slate-50 p-3 rounded border border-slate-200 space-y-1.5">
+              <label className="text-xs font-bold text-slate-800 flex items-center justify-between">
+                <span className="flex items-center gap-1.5">
+                  <Calendar className="w-3.5 h-3.5 text-blue-600" />
+                  <span>วันที่ทำการตรวจนับ (Audit Date):</span>
+                </span>
+                <span className="text-[10px] text-blue-600 font-bold font-mono">{auditDate}</span>
+              </label>
+
+              <input
+                type="date"
+                value={auditDate}
+                onChange={(e) => setAuditDate(e.target.value)}
+                className="w-full bg-white text-xs font-semibold text-slate-900 rounded px-2.5 py-1.5 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono"
+              />
+
+              {/* Quick Cycle Presets */}
+              <div className="flex items-center gap-1 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setAuditDate(new Date().toISOString().slice(0, 10))}
+                  className="px-2 py-0.5 rounded bg-white hover:bg-slate-200 border border-slate-300 text-[10px] font-bold text-slate-700 transition"
+                >
+                  วันนี้
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuditDate(getThursdayOfWeek())}
+                  className="px-2 py-0.5 rounded bg-blue-50 hover:bg-blue-100 border border-blue-200 text-[10px] font-bold text-blue-700 transition"
+                >
+                  วันพฤหัสบดี
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAuditDate(getFridayOfWeek())}
+                  className="px-2 py-0.5 rounded bg-blue-50 hover:bg-blue-100 border border-blue-200 text-[10px] font-bold text-blue-700 transition"
+                >
+                  วันศุกร์
+                </button>
+              </div>
             </div>
           </div>
 

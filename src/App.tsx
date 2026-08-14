@@ -158,7 +158,10 @@ export default function App() {
 
   // 2. Real-time Google Sheets subscription with local data recovery (In Progress) and NO Mock Data fallback
   useEffect(() => {
-    setLoading(true);
+    // Only show full-page loading spinner on initial cold start when branches is empty
+    if (branches.length === 0) {
+      setLoading(true);
+    }
     const unsubscribe = subscribeToBranches(
       (updatedBranches) => {
         // Successful fetch response (Response OK) -> Mark as online and connected immediately
@@ -616,83 +619,103 @@ export default function App() {
   const handleImportItemsToBranch = async (
     branchIdOrNewName: string,
     importedItems: Omit<StockItem, 'id'>[],
-    isNewBranch?: boolean
+    isNewBranch?: boolean,
+    auditDate?: string,
+    scheduleDay?: 'THURSDAY' | 'FRIDAY' | 'OTHER'
   ) => {
-    if (isNewBranch) {
-      const newCode = `BR-00${branches.length + 1}`;
-      const newBranch: Branch = normalizeBranchData({
-        id: newCode,
-        code: newCode,
-        name: branchIdOrNewName.trim() || `สาขา ${newCode}`,
-        region: 'ทั่วไป',
-        auditStatus: 'NOT_STARTED',
-        assignedAuditor: 'เจ้าหน้าที่ Audit',
-        items: processItems(
+    setIsSubmitting(true);
+    const effectiveAuditDate = auditDate || new Date().toISOString().slice(0, 10);
+    try {
+      if (isNewBranch) {
+        const newCode = `BR-00${branches.length + 1}`;
+        const newBranch: Branch = normalizeBranchData({
+          id: newCode,
+          code: newCode,
+          name: branchIdOrNewName.trim() || `สาขา ${newCode}`,
+          region: 'ทั่วไป',
+          auditDate: effectiveAuditDate,
+          auditScheduleDay: scheduleDay || 'OTHER',
+          auditStatus: 'NOT_STARTED',
+          assignedAuditor: 'เจ้าหน้าที่ Audit',
+          items: processItems(
+            importedItems.map((item, idx) => ({
+              ...item,
+              auditDate: effectiveAuditDate,
+              id: `item-${Date.now()}-${idx}`,
+            }))
+          ),
+        });
+
+        // Set state and save to LocalStorage immediately (optimistic & offline support)
+        setBranches((prev) => {
+          const next = [...prev, newBranch];
+          safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', next);
+          return next;
+        });
+        setSelectedBranchId(newBranch.id);
+
+        try {
+          await saveBranch(newBranch);
+        } catch (e) {
+          console.warn('Could not save new branch to cloud, saved locally:', e);
+        }
+      } else {
+        const branch = branches.find((b) => b.id === branchIdOrNewName);
+        if (!branch) return;
+
+        const processed = processItems(
           importedItems.map((item, idx) => ({
             ...item,
+            auditDate: effectiveAuditDate,
             id: `item-${Date.now()}-${idx}`,
           }))
-        ),
-      });
+        );
 
-      // Set state and save to LocalStorage immediately (optimistic & offline support)
-      setBranches((prev) => {
-        const next = [...prev, newBranch];
-        safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', next);
-        return next;
-      });
-      setSelectedBranchId(newBranch.id);
+        const updated: Branch = {
+          ...branch,
+          auditDate: effectiveAuditDate,
+          auditScheduleDay: scheduleDay || branch.auditScheduleDay || 'OTHER',
+          items: processed,
+        };
 
-      try {
-        await saveBranch(newBranch);
-      } catch (e) {
-        console.warn('Could not save new branch to cloud, saved locally:', e);
+        // Set state and save to LocalStorage immediately (optimistic & offline support)
+        setBranches((prev) => {
+          const next = prev.map((b) => (b.id === branchIdOrNewName ? updated : b));
+          safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', next);
+          return next;
+        });
+        setSelectedBranchId(branchIdOrNewName);
+
+        try {
+          await saveBranch(updated);
+        } catch (e) {
+          console.warn('Could not save updated branch to Google Sheets, saved locally:', e);
+        }
       }
-    } else {
-      const branch = branches.find((b) => b.id === branchIdOrNewName);
-      if (!branch) return;
-
-      const processed = processItems(
-        importedItems.map((item, idx) => ({
-          ...item,
-          id: `item-${Date.now()}-${idx}`,
-        }))
-      );
-
-      const updated: Branch = {
-        ...branch,
-        items: processed,
-      };
-
-      // Set state and save to LocalStorage immediately (optimistic & offline support)
-      setBranches((prev) => {
-        const next = prev.map((b) => (b.id === branchIdOrNewName ? updated : b));
-        safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', next);
-        return next;
-      });
-      setSelectedBranchId(branchIdOrNewName);
-
-      try {
-        await saveBranch(updated);
-      } catch (e) {
-        console.warn('Could not save updated branch to Google Sheets, saved locally:', e);
-      }
+    } catch (err) {
+      console.error('Error importing items to branch:', err);
+    } finally {
+      setIsSubmitting(false);
+      setLoading(false);
     }
   };
 
   // Reset / Clear Google Sheets Database (Strict empty state clean-up)
   const handleResetData = async () => {
     if (confirm('⚠️ คุณต้องการล้างฐานข้อมูลบน Google Sheets ทั้งหมดและเริ่มต้นนับใหม่ใช่หรือไม่? (ข้อมูลสาขาและรายงานสต็อกทั้งหมดจะถูกลบออก และหน้าจอจะสลับเป็นตารางว่างเพื่อเริ่มบันทึกจริง)')) {
+      setIsSubmitting(true);
       try {
-        setLoading(true);
         await resetFirestoreDatabase([]);
         // Clear local storage cache as well
         safeRemoveLocalStorage('STOCK_ENGINE_REAL_DATA');
         safeRemoveLocalStorage('stock_branches_cache');
+        setBranches([]);
         setSelectedBranchId('ALL');
         alert('ล้างฐานข้อมูล Google Sheets และเคลียร์ข้อมูลในเครื่องทั้งหมดเรียบร้อยแล้วค่ะ');
       } catch (e) {
         alert('เกิดข้อผิดพลาดในการล้างข้อมูล Google Sheets');
+      } finally {
+        setIsSubmitting(false);
         setLoading(false);
       }
     }

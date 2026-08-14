@@ -15,8 +15,20 @@ export interface StockItem {
   status: VarianceStatus;
   color: VarianceColor;
   unitPrice?: number;
+  auditDate?: string; // YYYY-MM-DD
   lastScannedAt?: string;
   notes?: string;
+}
+
+export interface DailyAuditRecord {
+  status: AuditStatus;
+  auditDate: string; // YYYY-MM-DD
+  dayOfWeek?: string; // e.g. "พฤหัสบดี", "ศุกร์"
+  submittedAt?: string;
+  totalItems?: number;
+  accuracy?: number;
+  scannedQty?: number;
+  systemQty?: number;
 }
 
 export interface Branch {
@@ -28,6 +40,9 @@ export interface Branch {
   assignedAuditor?: string;
   startedAt?: string;
   submittedAt?: string;
+  auditDate?: string; // YYYY-MM-DD
+  auditScheduleDay?: 'THURSDAY' | 'FRIDAY' | 'ALL' | string;
+  dailyAuditHistory?: Record<string, DailyAuditRecord>;
   items: StockItem[];
 }
 

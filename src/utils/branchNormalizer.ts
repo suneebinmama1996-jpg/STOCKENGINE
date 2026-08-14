@@ -274,6 +274,9 @@ export function normalizeBranchData(input: any, fallbackIndex: number = 0): Bran
     auditStatus: finalAuditStatus,
     startedAt: raw.startedAt ? String(raw.startedAt) : undefined,
     submittedAt: raw.submittedAt ? String(raw.submittedAt) : undefined,
+    auditDate: raw.auditDate ? String(raw.auditDate) : (raw.items && raw.items[0]?.auditDate ? String(raw.items[0].auditDate) : undefined),
+    auditScheduleDay: raw.auditScheduleDay ? String(raw.auditScheduleDay) : undefined,
+    dailyAuditHistory: raw.dailyAuditHistory || undefined,
     items: safeParseItems(raw.items),
   };
 }
