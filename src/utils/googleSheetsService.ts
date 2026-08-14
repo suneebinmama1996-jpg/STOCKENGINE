@@ -1,5 +1,6 @@
 import { Branch } from '../types';
-import { safeParseItems, safeSetLocalStorage, safeGetLocalStorage } from './safeJsonParser';
+import { safeSetLocalStorage, safeGetLocalStorage } from './safeJsonParser';
+import { normalizeBranchData, normalizeBranchesList } from './branchNormalizer';
 
 const GOOGLE_SHEETS_URL = 'https://script.google.com/macros/s/AKfycbw5azl9m7Np9VY5Noe9fT78lRa7Ftzswn7f4lVeAmb_z4cUVNf7RjiL6Sdb2u8BRM9e/exec';
 const LOCAL_STORAGE_KEY = 'STOCK_ENGINE_REAL_DATA';
@@ -33,14 +34,9 @@ export const isMockBranch = (b: Branch): boolean => {
 // Local storage helper
 function getLocalBranches(): Branch[] {
   try {
-    const cached = safeGetLocalStorage<Branch[]>(LOCAL_STORAGE_KEY, []);
+    const cached = safeGetLocalStorage<any[]>(LOCAL_STORAGE_KEY, []);
     if (Array.isArray(cached) && cached.length > 0) {
-      return cached
-        .filter(b => b && !isMockBranch(b))
-        .map(b => ({
-          ...b,
-          items: safeParseItems(b.items)
-        }));
+      return normalizeBranchesList(cached.filter(b => b && !isMockBranch(b)));
     }
   } catch (e) {
     console.warn('[Google Sheets Service] Error reading local cache safely:', e);
@@ -50,13 +46,8 @@ function getLocalBranches(): Branch[] {
 
 function saveLocalBranches(branches: Branch[]) {
   try {
-    const realBranches = branches
-      .filter(b => !isMockBranch(b))
-      .map(b => ({
-        ...b,
-        items: safeParseItems(b.items)
-      }));
-    safeSetLocalStorage(LOCAL_STORAGE_KEY, realBranches);
+    const cleanList = normalizeBranchesList(branches.filter(b => !isMockBranch(b)));
+    safeSetLocalStorage(LOCAL_STORAGE_KEY, cleanList);
   } catch (e) {
     console.warn('[Google Sheets Service] Error writing local cache safely:', e);
   }
@@ -79,7 +70,7 @@ export function subscribeToBranches(
       }
       const json = await res.json();
       
-      let fetched: Branch[] = [];
+      let fetched: any[] = [];
       if (Array.isArray(json)) {
         fetched = json;
       } else if (json && Array.isArray(json.branches)) {
@@ -89,12 +80,10 @@ export function subscribeToBranches(
       }
 
       if (active) {
-        const realFetched = fetched
-          .filter(b => !isMockBranch(b))
-          .map(b => ({
-            ...b,
-            items: safeParseItems(b.items)
-          }));
+        const realFetched = normalizeBranchesList(
+          fetched.filter(b => !isMockBranch(b))
+        );
+
         // If we got valid real branches from sheets, cache them locally and update state
         if (realFetched.length > 0) {
           saveLocalBranches(realFetched);
@@ -132,23 +121,25 @@ export function subscribeToBranches(
  * Saves or updates a branch in Google Sheets and updates LocalStorage cache.
  * Uses text/plain header with POST stringify payload as requested.
  */
-export async function saveBranch(branch: Branch): Promise<void> {
+export async function saveBranch(rawBranch: Branch): Promise<void> {
+  const branch = normalizeBranchData(rawBranch);
   if (isMockBranch(branch)) {
     console.log('[Google Sheets Service] Skipping save for mock branch:', branch.name);
     return;
   }
 
   // Update local storage first (Optimistic UI)
-  const locals = getLocalBranches();
-  const idx = locals.findIndex(b => b.id === branch.id);
+  const currentLocals = getLocalBranches();
+  const idx = currentLocals.findIndex(b => b.id === branch.id || b.name === branch.name || b.code === branch.code);
   if (idx >= 0) {
-    locals[idx] = branch;
+    currentLocals[idx] = branch;
   } else {
-    locals.push(branch);
+    currentLocals.push(branch);
   }
+  const locals = normalizeBranchesList(currentLocals);
   saveLocalBranches(locals);
 
-  // Post updates to Google Sheets Web App
+  // Post updates to Google Sheets Web App with correct keys
   try {
     const payload = {
       action: 'save',
@@ -158,8 +149,8 @@ export async function saveBranch(branch: Branch): Promise<void> {
       code: branch.code,
       name: branch.name,
       region: branch.region,
-      auditStatus: branch.auditStatus,
       assignedAuditor: branch.assignedAuditor || '',
+      auditStatus: branch.auditStatus,
       items: branch.items
     };
 
@@ -182,13 +173,16 @@ export async function saveBranch(branch: Branch): Promise<void> {
  * Deletes a branch from Google Sheets and LocalStorage
  */
 export async function removeBranch(branchId: string): Promise<void> {
-  const locals = getLocalBranches().filter(b => b.id !== branchId);
+  const locals = getLocalBranches().filter(b => b.id !== branchId && b.code !== branchId);
   saveLocalBranches(locals);
 
   try {
     const payload = {
       action: 'deleteBranch',
-      id: branchId
+      id: branchId,
+      branchId: branchId,
+      code: branchId,
+      branches: locals
     };
 
     const response = await fetch(GOOGLE_SHEETS_URL, {
@@ -209,7 +203,7 @@ export async function removeBranch(branchId: string): Promise<void> {
  * Resets database/sheet with specific list
  */
 export async function resetFirestoreDatabase(defaultBranches: Branch[] = []): Promise<void> {
-  const filtered = defaultBranches.filter(b => !isMockBranch(b));
+  const filtered = normalizeBranchesList(defaultBranches.filter(b => !isMockBranch(b)));
   saveLocalBranches(filtered);
 
   try {

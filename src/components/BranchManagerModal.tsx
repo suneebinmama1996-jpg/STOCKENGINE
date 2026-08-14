@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Branch } from '../types';
+import { Branch, AuditStatus } from '../types';
 import { safeParseItems } from '../utils/safeJsonParser';
+import { normalizeBranchData, normalizeBranchesList } from '../utils/branchNormalizer';
 import {
   Building2,
   Plus,
@@ -14,15 +15,29 @@ import {
   Layers,
   Link,
   Copy,
-  ExternalLink,
+  Clock,
+  Unlock,
+  Lock,
 } from 'lucide-react';
 
 interface BranchManagerModalProps {
   branches: Branch[];
-  onAddBranch: (data: { code: string; name: string; region: string; assignedAuditor?: string }) => void;
+  onAddBranch: (data: {
+    code: string;
+    name: string;
+    region: string;
+    assignedAuditor?: string;
+    auditStatus?: AuditStatus;
+  }) => void;
   onEditBranch: (
     branchId: string,
-    data: { code: string; name: string; region: string; assignedAuditor?: string }
+    data: {
+      code: string;
+      name: string;
+      region: string;
+      assignedAuditor?: string;
+      auditStatus?: AuditStatus;
+    }
   ) => void;
   onDeleteBranch: (branchId: string) => void;
   onClose: () => void;
@@ -39,22 +54,25 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
   initialMode = 'LIST',
   isSubmitting = false,
 }) => {
+  const cleanBranches = normalizeBranchesList(branches);
   const [activeTab, setActiveTab] = useState<'LIST' | 'ADD'>(initialMode);
   const [copiedBranchId, setCopiedBranchId] = useState<string | null>(null);
   const [createdBranchNotice, setCreatedBranchNotice] = useState<{ id: string; code: string; name: string } | null>(null);
   
-  // Add Branch Form State
-  const [newCode, setNewCode] = useState(`BR-00${branches.length + 1}`);
+  // Add Branch Form State - Strictly mapped according to key specification
+  const [newCode, setNewCode] = useState(`BR-00${cleanBranches.length + 1}`);
   const [newName, setNewName] = useState('');
-  const [newRegion, setNewRegion] = useState('กรุงเทพฯ และปริมณฑล (Bangkok)');
+  const [newRegion, setNewRegion] = useState('กรุงเทพฯ และปริมณฑล');
   const [newAuditor, setNewAuditor] = useState('');
+  const [newStatus, setNewStatus] = useState<AuditStatus>('NOT_STARTED');
 
-  // Editing State
+  // Editing State - Strictly mapped according to key specification
   const [editingBranchId, setEditingBranchId] = useState<string | null>(null);
   const [editCode, setEditCode] = useState('');
   const [editName, setEditName] = useState('');
   const [editRegion, setEditRegion] = useState('');
   const [editAuditor, setEditAuditor] = useState('');
+  const [editStatus, setEditStatus] = useState<AuditStatus>('NOT_STARTED');
 
   const getBranchUrl = (branchId: string) => {
     const url = new URL(window.location.href);
@@ -76,12 +94,14 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
     );
   };
 
-  const handleStartEdit = (b: Branch) => {
-    setEditingBranchId(b.id);
-    setEditCode(b.code);
-    setEditName(b.name);
-    setEditRegion(b.region);
-    setEditAuditor(b.assignedAuditor || '');
+  const handleStartEdit = (rawBranch: Branch) => {
+    const b = normalizeBranchData(rawBranch);
+    setEditingBranchId(rawBranch.id || b.id);
+    setEditCode(b.code || b.id || '');
+    setEditName(b.name || '');
+    setEditRegion(b.region || 'ทั่วไป');
+    setEditAuditor(b.assignedAuditor === 'เจ้าหน้าที่ Audit' ? '' : (b.assignedAuditor || ''));
+    setEditStatus(b.auditStatus || 'NOT_STARTED');
   };
 
   const handleSaveEdit = (branchId: string) => {
@@ -90,10 +110,11 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
       return;
     }
     onEditBranch(branchId, {
-      code: editCode,
-      name: editName,
-      region: editRegion,
-      assignedAuditor: editAuditor,
+      code: editCode.trim() || branchId,
+      name: editName.trim(),
+      region: editRegion.trim() || 'ทั่วไป',
+      assignedAuditor: editAuditor.trim() || 'เจ้าหน้าที่ Audit',
+      auditStatus: editStatus,
     });
     setEditingBranchId(null);
   };
@@ -105,20 +126,22 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
       return;
     }
 
-    const createdCode = newCode || `BR-00${branches.length + 1}`;
+    const createdCode = newCode.trim() || `BR-00${branches.length + 1}`;
     const createdName = newName.trim();
+    const createdRegion = newRegion.trim() || 'ทั่วไป';
+    const createdAuditor = newAuditor.trim() || 'เจ้าหน้าที่ Audit';
 
     onAddBranch({
       code: createdCode,
       name: createdName,
-      region: newRegion,
-      assignedAuditor: newAuditor || 'เจ้าหน้าที่ Audit',
+      region: createdRegion,
+      assignedAuditor: createdAuditor,
+      auditStatus: newStatus,
     });
 
     // Notice for link sharing
-    const newBranchObj = branches[0]; // will be updated when state refreshes
     setCreatedBranchNotice({
-      id: newBranchObj ? newBranchObj.id : `BR-${Date.now().toString().slice(-4)}`,
+      id: createdCode,
       code: createdCode,
       name: createdName,
     });
@@ -126,6 +149,8 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
     // Reset Form
     setNewName('');
     setNewAuditor('');
+    setNewRegion('กรุงเทพฯ และปริมณฑล');
+    setNewStatus('NOT_STARTED');
     setNewCode(`BR-00${branches.length + 2}`);
     setActiveTab('LIST');
   };
@@ -168,7 +193,7 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
             }`}
           >
             <Building2 className="w-3.5 h-3.5" />
-            <span>รายการสาขาทั้งหมด ({branches.length})</span>
+            <span>รายการสาขาทั้งหมด ({cleanBranches.length})</span>
           </button>
 
           <button
@@ -235,7 +260,7 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
               )}
 
               <div className="flex items-center justify-between text-xs text-slate-500 font-medium">
-                <span>มีสาขาในระบบทั้งหมด {branches.length} สาขา</span>
+                <span>มีสาขาในระบบทั้งหมด {cleanBranches.length} สาขา</span>
                 <button
                   onClick={() => setActiveTab('ADD')}
                   className="inline-flex items-center gap-1 text-xs font-bold text-blue-600 hover:text-blue-700"
@@ -245,7 +270,7 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
                 </button>
               </div>
 
-              {branches.length === 0 ? (
+              {cleanBranches.length === 0 ? (
                 <div className="py-8 text-center bg-slate-50 rounded border border-slate-200">
                   <Building2 className="w-8 h-8 text-slate-400 mx-auto mb-2" />
                   <p className="text-xs text-slate-600 font-bold">ยังไม่มีสาขาในระบบ</p>
@@ -253,8 +278,8 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {branches.map((b, index) => {
-                    const isEditing = editingBranchId === b.id;
+                  {cleanBranches.map((b, index) => {
+                    const isEditing = editingBranchId === b.id || editingBranchId === b.code;
                     const itemList = safeParseItems(b.items);
                     const itemsLength = itemList.length;
 
@@ -262,51 +287,77 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
                       return (
                         <div
                           key={`${b.id}-${index}`}
-                          className="bg-blue-50/60 p-3 rounded border border-blue-200 space-y-2"
+                          className="bg-blue-50/60 p-3 rounded border border-blue-200 space-y-2.5"
                         >
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
                             <div>
-                              <label className="text-[10px] font-bold text-slate-600">รหัสสาขา:</label>
+                              <label className="text-[10px] font-bold text-slate-700 block mb-0.5">
+                                รหัสสาขา (code / id):
+                              </label>
                               <input
                                 type="text"
                                 value={editCode}
+                                placeholder="เช่น BR-1930 หรือ 008"
                                 onChange={(e) => setEditCode(e.target.value)}
-                                className="w-full bg-white text-xs p-1.5 border border-slate-300 rounded font-mono font-bold"
+                                className="w-full bg-white text-xs p-1.5 border border-slate-300 rounded font-mono font-bold focus:ring-1 focus:ring-blue-500 focus:outline-none"
                               />
                             </div>
                             <div>
-                              <label className="text-[10px] font-bold text-slate-600">ชื่อสาขา:</label>
+                              <label className="text-[10px] font-bold text-slate-700 block mb-0.5">
+                                ชื่อสาขา (name):
+                              </label>
                               <input
                                 type="text"
                                 value={editName}
+                                placeholder="เช่น สาขา ดิจิตอล"
                                 onChange={(e) => setEditName(e.target.value)}
-                                className="w-full bg-white text-xs p-1.5 border border-slate-300 rounded font-bold"
+                                className="w-full bg-white text-xs p-1.5 border border-slate-300 rounded font-bold focus:ring-1 focus:ring-blue-500 focus:outline-none"
                               />
                             </div>
                             <div>
-                              <label className="text-[10px] font-bold text-slate-600">ภูมิภาค/พื้นที่:</label>
+                              <label className="text-[10px] font-bold text-slate-700 block mb-0.5">
+                                ภูมิภาค/พื้นที่ (region):
+                              </label>
                               <input
                                 type="text"
                                 value={editRegion}
+                                placeholder="เช่น นราธิวาส, ภาคใต้"
                                 onChange={(e) => setEditRegion(e.target.value)}
-                                className="w-full bg-white text-xs p-1.5 border border-slate-300 rounded"
+                                className="w-full bg-white text-xs p-1.5 border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 focus:outline-none"
                               />
                             </div>
                             <div>
-                              <label className="text-[10px] font-bold text-slate-600">ผู้ตรวจ (Auditor):</label>
+                              <label className="text-[10px] font-bold text-slate-700 block mb-0.5">
+                                ผู้ตรวจ (assignedAuditor):
+                              </label>
                               <input
                                 type="text"
                                 value={editAuditor}
+                                placeholder="เช่น สมชาย สายตรวจ"
                                 onChange={(e) => setEditAuditor(e.target.value)}
-                                className="w-full bg-white text-xs p-1.5 border border-slate-300 rounded"
+                                className="w-full bg-white text-xs p-1.5 border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 focus:outline-none"
                               />
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-bold text-slate-700 block mb-0.5">
+                                สถานะ (auditStatus):
+                              </label>
+                              <select
+                                value={editStatus}
+                                onChange={(e) => setEditStatus(e.target.value as AuditStatus)}
+                                className="w-full bg-white text-xs p-1.5 border border-slate-300 rounded font-semibold focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                              >
+                                <option value="NOT_STARTED">ยังไม่เริ่ม (NOT_STARTED)</option>
+                                <option value="IN_PROGRESS">กำลังตรวจนับ (IN_PROGRESS)</option>
+                                <option value="SUBMITTED">ส่งรายงานแล้ว (SUBMITTED)</option>
+                              </select>
                             </div>
                           </div>
 
                           <div className="flex justify-end gap-2 pt-1">
                             <button
                               onClick={() => setEditingBranchId(null)}
-                              className="px-2.5 py-1 text-xs font-semibold rounded bg-white border border-slate-300 text-slate-700"
+                              className="px-2.5 py-1 text-xs font-semibold rounded bg-white border border-slate-300 text-slate-700 hover:bg-slate-50 transition"
                             >
                               ยกเลิก
                             </button>
@@ -419,15 +470,15 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
                 กรอกข้อมูลสำหรับสร้างสาขาใหม่
               </h4>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 <div>
                   <label className="text-xs font-bold text-slate-800 block mb-1">
-                    รหัสสาขา (Branch Code) <span className="text-rose-500">*</span>
+                    รหัสสาขา (code / id) <span className="text-rose-500">*</span>
                   </label>
                   <input
                     type="text"
                     required
-                    placeholder="เช่น BR-004, BKK-01"
+                    placeholder="เช่น BR-1930 หรือ 008"
                     value={newCode}
                     onChange={(e) => setNewCode(e.target.value)}
                     className="w-full bg-white text-xs font-mono font-bold px-3 py-1.5 border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -436,12 +487,12 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
 
                 <div>
                   <label className="text-xs font-bold text-slate-800 block mb-1">
-                    ชื่อสาขา (Branch Name) <span className="text-rose-500">*</span>
+                    ชื่อสาขา (name) <span className="text-rose-500">*</span>
                   </label>
                   <input
                     type="text"
                     required
-                    placeholder="เช่น สาขา เชียงใหม่ (Chiang Mai)"
+                    placeholder="เช่น สาขา ดิจิตอล"
                     value={newName}
                     onChange={(e) => setNewName(e.target.value)}
                     className="w-full bg-white text-xs font-bold px-3 py-1.5 border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -450,11 +501,11 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
 
                 <div>
                   <label className="text-xs font-bold text-slate-800 block mb-1">
-                    ภูมิภาค / พื้นที่ (Region)
+                    ภูมิภาค/พื้นที่ (region)
                   </label>
                   <input
                     type="text"
-                    placeholder="เช่น ภาคเหนือ, ภาคตะวันออก, กรุงเทพฯ"
+                    placeholder="เช่น นราธิวาส, ภาคใต้, กรุงเทพฯ"
                     value={newRegion}
                     onChange={(e) => setNewRegion(e.target.value)}
                     className="w-full bg-white text-xs px-3 py-1.5 border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
@@ -463,7 +514,7 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
 
                 <div>
                   <label className="text-xs font-bold text-slate-800 block mb-1">
-                    ผู้รับผิดชอบการตรวจนับ (Assigned Auditor)
+                    ผู้ตรวจ (assignedAuditor)
                   </label>
                   <input
                     type="text"
@@ -472,6 +523,21 @@ export const BranchManagerModal: React.FC<BranchManagerModalProps> = ({
                     onChange={(e) => setNewAuditor(e.target.value)}
                     className="w-full bg-white text-xs px-3 py-1.5 border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
                   />
+                </div>
+
+                <div>
+                  <label className="text-xs font-bold text-slate-800 block mb-1">
+                    สถานะการตรวจนับ (auditStatus)
+                  </label>
+                  <select
+                    value={newStatus}
+                    onChange={(e) => setNewStatus(e.target.value as AuditStatus)}
+                    className="w-full bg-white text-xs font-semibold px-3 py-1.5 border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-blue-500"
+                  >
+                    <option value="NOT_STARTED">ยังไม่เริ่ม (NOT_STARTED)</option>
+                    <option value="IN_PROGRESS">กำลังตรวจนับ (IN_PROGRESS)</option>
+                    <option value="SUBMITTED">ส่งรายงานแล้ว (SUBMITTED)</option>
+                  </select>
                 </div>
               </div>
 

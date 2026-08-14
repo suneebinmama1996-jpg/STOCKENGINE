@@ -23,6 +23,7 @@ import {
   safeGetLocalStorage,
   safeRemoveLocalStorage,
 } from './utils/safeJsonParser';
+import { normalizeBranchData, normalizeBranchesList } from './utils/branchNormalizer';
 
 const isMockBranch = (b: Branch): boolean => {
   if (!b) return true;
@@ -161,12 +162,12 @@ export default function App() {
     const unsubscribe = subscribeToBranches(
       (updatedBranches) => {
         // Successful fetch response (Response OK) -> Mark as online and connected immediately
-        const realBranches = updatedBranches
-          .filter(b => !isMockBranch(b))
-          .map(b => ({
-            ...b,
-            items: safeParseItems(b.items)
-          }));
+        const realBranches = normalizeBranchesList(
+          updatedBranches.filter((b) => !isMockBranch(b))
+        ).map((b) => ({
+          ...b,
+          items: safeParseItems(b.items),
+        }));
         setBranches(realBranches);
         setIsOffline(false);
         setIsConnected(true);
@@ -179,18 +180,20 @@ export default function App() {
         console.warn('Google Sheets subscription network error, entering offline mode:', error);
         setIsOffline(true);
         setIsConnected(false);
-        
+
         let localBranches: Branch[] = [];
         try {
-          const cached = safeGetLocalStorage<Branch[]>('STOCK_ENGINE_REAL_DATA', []) || safeGetLocalStorage<Branch[]>('stock_branches_cache', []);
+          const cached =
+            safeGetLocalStorage<Branch[]>('STOCK_ENGINE_REAL_DATA', []) ||
+            safeGetLocalStorage<Branch[]>('stock_branches_cache', []);
           if (Array.isArray(cached) && cached.length > 0) {
             // Only keep real user data
-            localBranches = cached
-              .filter(b => b && !isMockBranch(b))
-              .map(b => ({
-                ...b,
-                items: safeParseItems(b.items)
-              }));
+            localBranches = normalizeBranchesList(
+              cached.filter((b) => b && !isMockBranch(b))
+            ).map((b) => ({
+              ...b,
+              items: safeParseItems(b.items),
+            }));
           }
         } catch (e) {
           console.warn('Error recovering data from localStorage safely:', e);
@@ -312,22 +315,28 @@ export default function App() {
   }, [loading, syncError]);
 
   // Add new branch to Google Sheets
-  const handleAddBranch = async (data: { code: string; name: string; region: string; assignedAuditor?: string }) => {
-    const newBranchId = `BR-${Date.now().toString().slice(-4)}`;
-    const newBranch: Branch = {
-      id: newBranchId,
-      code: data.code.trim().toUpperCase() || `BR-00${branches.length + 1}`,
+  const handleAddBranch = async (data: {
+    code: string;
+    name: string;
+    region: string;
+    assignedAuditor?: string;
+    auditStatus?: AuditStatus;
+  }) => {
+    const rawCode = data.code.trim().toUpperCase() || `BR-00${branches.length + 1}`;
+    const newBranch: Branch = normalizeBranchData({
+      id: rawCode,
+      code: rawCode,
       name: data.name.trim(),
-      region: data.region.trim() || 'Central',
-      auditStatus: 'NOT_STARTED',
+      region: data.region.trim() || 'ทั่วไป',
+      auditStatus: data.auditStatus || 'NOT_STARTED',
       assignedAuditor: data.assignedAuditor?.trim() || 'เจ้าหน้าที่ Audit',
       items: [],
-    };
+    });
 
     setIsSubmitting(true);
     try {
       await saveBranch(newBranch);
-      setSelectedBranchId(newBranchId);
+      setSelectedBranchId(newBranch.id);
       handleRefresh();
     } catch (e) {
       alert('เกิดข้อผิดพลาดในการบันทึกข้อมูลสาขาลง Google Sheets');
@@ -339,17 +348,24 @@ export default function App() {
   // Edit branch info in Google Sheets
   const handleEditBranch = async (
     branchId: string,
-    data: { code: string; name: string; region: string; assignedAuditor?: string }
+    data: {
+      code: string;
+      name: string;
+      region: string;
+      assignedAuditor?: string;
+      auditStatus?: AuditStatus;
+    }
   ) => {
     const target = branches.find((b) => b.id === branchId);
     if (!target) return;
-    const updated: Branch = {
+    const updated: Branch = normalizeBranchData({
       ...target,
-      code: data.code.trim().toUpperCase(),
-      name: data.name.trim(),
-      region: data.region.trim(),
-      assignedAuditor: data.assignedAuditor?.trim(),
-    };
+      code: data.code.trim().toUpperCase() || target.code,
+      name: data.name.trim() || target.name,
+      region: data.region.trim() || 'ทั่วไป',
+      assignedAuditor: data.assignedAuditor?.trim() || 'เจ้าหน้าที่ Audit',
+      auditStatus: data.auditStatus || target.auditStatus || 'NOT_STARTED',
+    });
 
     setIsSubmitting(true);
     try {
@@ -603,12 +619,12 @@ export default function App() {
     isNewBranch?: boolean
   ) => {
     if (isNewBranch) {
-      const newBranchId = `BR-${Date.now().toString().slice(-4)}`;
-      const newBranch: Branch = {
-        id: newBranchId,
-        code: `NEW-${branches.length + 1}`,
-        name: branchIdOrNewName,
-        region: 'Central',
+      const newCode = `BR-00${branches.length + 1}`;
+      const newBranch: Branch = normalizeBranchData({
+        id: newCode,
+        code: newCode,
+        name: branchIdOrNewName.trim() || `สาขา ${newCode}`,
+        region: 'ทั่วไป',
         auditStatus: 'NOT_STARTED',
         assignedAuditor: 'เจ้าหน้าที่ Audit',
         items: processItems(
@@ -617,7 +633,7 @@ export default function App() {
             id: `item-${Date.now()}-${idx}`,
           }))
         ),
-      };
+      });
 
       // Set state and save to LocalStorage immediately (optimistic & offline support)
       setBranches((prev) => {
@@ -625,7 +641,7 @@ export default function App() {
         safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', next);
         return next;
       });
-      setSelectedBranchId(newBranchId);
+      setSelectedBranchId(newBranch.id);
 
       try {
         await saveBranch(newBranch);

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Branch, AuditSummary, AuditStatus } from '../types';
 import { safeParseItems } from '../utils/safeJsonParser';
+import { normalizeBranchesList } from '../utils/branchNormalizer';
 import {
   Building2,
   CheckCircle2,
@@ -53,12 +54,15 @@ export const AuditDashboard: React.FC<AuditDashboardProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [viewMode, setViewMode] = useState<'table' | 'cards'>('table');
 
-  const filteredBranches = branches.filter((b) => {
+  const cleanBranches = normalizeBranchesList(branches);
+
+  const filteredBranches = cleanBranches.filter((b) => {
     const matchesStatus = statusFilter === 'ALL' || b.auditStatus === statusFilter;
     const matchesSearch =
       (b.name || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
       (b.code || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (b.region || '').toLowerCase().includes(searchQuery.toLowerCase());
+      (b.region || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (b.assignedAuditor || '').toLowerCase().includes(searchQuery.toLowerCase());
     return matchesStatus && matchesSearch;
   });
 
