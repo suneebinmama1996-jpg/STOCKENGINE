@@ -1,1 +1,24 @@
 @import "tailwindcss";
+
+/* HTML5-QRCode Mobile Scanner Optimization */
+#camera-reader-viewport {
+  position: relative !important;
+  width: 100% !important;
+  min-height: 240px !important;
+  background-color: #020617 !important;
+  border-radius: 0.75rem !important;
+  overflow: hidden !important;
+}
+
+#camera-reader-viewport video {
+  width: 100% !important;
+  height: 100% !important;
+  max-height: 320px !important;
+  object-fit: cover !important;
+  border-radius: 0.75rem !important;
+}
+
+#camera-reader-viewport img[alt="Info icon"],
+#camera-reader-viewport img[alt="Camera based scan"] {
+  display: none !important;
+}

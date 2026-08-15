@@ -39,10 +39,10 @@ export async function parseMasterFile(file: File): Promise<Omit<StockItem, 'id'>
 function getValueFromRow(row: Record<string, unknown>, possibleKeys: string[]): string {
   const rowKeys = Object.keys(row);
   for (const pKey of possibleKeys) {
-    const targetNorm = pKey.toLowerCase().replace(/[\s_]/g, '');
+    const targetNorm = pKey.toLowerCase().replace(/[\s_\-/\\]/g, '');
     for (const rKey of rowKeys) {
-      const rKeyNorm = rKey.toLowerCase().replace(/[\s_]/g, '');
-      if (rKeyNorm === targetNorm) {
+      const rKeyNorm = rKey.toLowerCase().replace(/[\s_\-/\\]/g, '');
+      if (rKeyNorm === targetNorm || rKeyNorm.includes(targetNorm) || targetNorm.includes(rKeyNorm)) {
         const val = row[rKey];
         if (val !== undefined && val !== null && String(val).trim() !== '') {
           return String(val).trim();
@@ -57,12 +57,13 @@ function processRawRows(rows: ImportedRow[]): Omit<StockItem, 'id'>[] {
   return rows.map((row, index) => {
     const record = row as Record<string, unknown>;
     
-    const barcodeRaw = getValueFromRow(record, ['บาร์โค้ด', 'barcode', 'รหัสสินค้า', 'sku', 'productcode']);
-    const skuRaw = getValueFromRow(record, ['รหัสสินค้า', 'sku', 'productcode', 'barcode', 'บาร์โค้ด']);
-    const sku = skuRaw || barcodeRaw || `SKU-${index + 1001}`;
-    const barcode = barcodeRaw || sku;
+    const skuRaw = getValueFromRow(record, ['รหัสสินค้า', 'sku', 'productcode', 'itemcode', 'itemno', 'code', 'รหัส', 'barcode', 'บาร์โค้ด']);
+    const barcodeRaw = getValueFromRow(record, ['บาร์โค้ด', 'barcode', 'รหัสบาร์โค้ด', 'upc', 'ean', 'รหัสสินค้า', 'sku', 'productcode']);
+    const nameRaw = getValueFromRow(record, ['ชื่อสินค้า', 'name', 'productname', 'description', 'รายละเอียด', 'ชื่อ', 'รายการ', 'item']);
     
-    const name = getValueFromRow(record, ['ชื่อสินค้า', 'name', 'productname', 'description', 'รายละเอียด']) || `สินค้า ${sku}`;
+    const sku = skuRaw || barcodeRaw || nameRaw || `SKU-${index + 1001}`;
+    const barcode = barcodeRaw || sku;
+    const name = nameRaw || `สินค้า ${sku}`;
 
     // Extract exact location / bin code from Excel file (e.g. SHT-1-1, DM-1-1, ตำแหน่งหยิบชั่วคราว)
     const location =

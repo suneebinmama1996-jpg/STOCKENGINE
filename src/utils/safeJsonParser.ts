@@ -45,26 +45,101 @@ export function sanitizeItemsString(rawStr: string): string {
 export function safeParseItems(rawItems: any): StockItem[] {
   if (!rawItems) return [];
 
+  const extractItem = (it: any, idx: number): StockItem => {
+    if (!it || typeof it !== 'object') {
+      return {
+        id: `item-${idx}`,
+        sku: `SKU-${idx + 1}`,
+        barcode: `SKU-${idx + 1}`,
+        name: `สินค้า ${idx + 1}`,
+        location: 'ไม่ระบุตำแหน่ง',
+        category: 'ทั่วไป',
+        systemQty: 0,
+        scannedQty: 0,
+        variance: 0,
+        status: 'MATCH',
+        color: 'GREEN',
+        unitPrice: 0,
+      };
+    }
+
+    const getVal = (keys: string[]): string => {
+      for (const k of keys) {
+        if (it[k] !== undefined && it[k] !== null && String(it[k]).trim() !== '') {
+          return String(it[k]).trim();
+        }
+      }
+      const itKeys = Object.keys(it);
+      for (const k of keys) {
+        const targetNorm = k.toLowerCase().replace(/[\s_\-]/g, '');
+        for (const rKey of itKeys) {
+          const rKeyNorm = rKey.toLowerCase().replace(/[\s_\-]/g, '');
+          if (rKeyNorm === targetNorm) {
+            const val = it[rKey];
+            if (val !== undefined && val !== null && String(val).trim() !== '') {
+              return String(val).trim();
+            }
+          }
+        }
+      }
+      return '';
+    };
+
+    const skuRaw = getVal([
+      'sku', 'SKU', 'รหัสสินค้า', 'productCode', 'product_code', 'itemCode',
+      'item_code', 'code', 'รหัส', 'itemNo', 'item_no', 'itemNumber'
+    ]);
+    const barcodeRaw = getVal([
+      'barcode', 'บาร์โค้ด', 'Barcode', 'BARCODE', 'รหัสบาร์โค้ด',
+      'upc', 'ean', 'qr', 'qrcode'
+    ]);
+    const nameRaw = getVal([
+      'name', 'ชื่อสินค้า', 'productName', 'product_name', 'description',
+      'รายละเอียด', 'ชื่อ', 'รายการ', 'item'
+    ]);
+    const locationRaw = getVal([
+      'location', 'ตำแหน่ง', 'ตำแหน่งจัดเก็บ', 'เลขลัง', 'รหัสลัง',
+      'ตำแหน่งลัง', 'bin', 'rack', 'shelf', 'box', 'พื้นที่คลังสินค้า', 'ลัง'
+    ]) || 'ไม่ระบุตำแหน่ง';
+    const categoryRaw = getVal([
+      'category', 'หมวดหมู่', 'กลุ่มสินค้า', 'ประเภท', 'dept', 'department'
+    ]) || 'ทั่วไป';
+
+    // Establish non-empty SKU, Barcode, and Name
+    const finalSku = skuRaw || barcodeRaw || nameRaw || (it.id && !String(it.id).startsWith('item-') ? String(it.id) : `SKU-${idx + 1001}`);
+    const finalBarcode = barcodeRaw || finalSku;
+    const finalName = nameRaw || (finalSku ? `สินค้า ${finalSku}` : `สินค้าลำดับที่ ${idx + 1}`);
+
+    const systemQtyRaw = it.systemQty ?? it['จำนวน'] ?? it['จำนวนตามระบบ'] ?? it.quantity ?? it.qty ?? 0;
+    const scannedQtyRaw = it.scannedQty ?? it['จำนวนสแกน'] ?? it['จำนวนสแกนจริง'] ?? it['จำนวนนับได้'] ?? 0;
+    const systemQty = Number(systemQtyRaw) || 0;
+    const scannedQty = Number(scannedQtyRaw) || 0;
+    const unitPriceRaw = it.unitPrice ?? it['ราคา'] ?? it['ราคาต่อหน่วย'] ?? it.price ?? 0;
+    const unitPrice = Number(unitPriceRaw) || 0;
+
+    return {
+      id: String(it.id || `item-${idx}`),
+      sku: finalSku,
+      barcode: finalBarcode,
+      name: finalName,
+      location: locationRaw,
+      category: categoryRaw,
+      systemQty,
+      scannedQty,
+      variance: Number(it.variance ?? (scannedQty - systemQty)),
+      status: it.status || (scannedQty === systemQty ? 'MATCH' : scannedQty < systemQty ? 'SHORTAGE' : 'OVER'),
+      color: it.color || (scannedQty === systemQty ? 'GREEN' : scannedQty < systemQty ? 'RED' : 'YELLOW'),
+      unitPrice,
+      lastScannedAt: it.lastScannedAt ? String(it.lastScannedAt) : undefined,
+      notes: it.notes ? String(it.notes) : undefined,
+    };
+  };
+
   // Case 1: Already an array
   if (Array.isArray(rawItems)) {
     return rawItems
       .filter((it) => it && typeof it === 'object')
-      .map((it, idx) => ({
-        id: String(it.id || `item-${idx}`),
-        sku: String(it.sku || ''),
-        barcode: String(it.barcode || it.sku || ''),
-        name: String(it.name || ''),
-        location: String(it.location || 'A1'),
-        category: String(it.category || 'ทั่วไป'),
-        systemQty: Number(it.systemQty ?? 0),
-        scannedQty: Number(it.scannedQty ?? 0),
-        variance: Number(it.variance ?? (Number(it.scannedQty ?? 0) - Number(it.systemQty ?? 0))),
-        status: it.status || (Number(it.scannedQty ?? 0) === Number(it.systemQty ?? 0) ? 'MATCH' : Number(it.scannedQty ?? 0) < Number(it.systemQty ?? 0) ? 'SHORTAGE' : 'OVER'),
-        color: it.color || (Number(it.scannedQty ?? 0) === Number(it.systemQty ?? 0) ? 'GREEN' : Number(it.scannedQty ?? 0) < Number(it.systemQty ?? 0) ? 'RED' : 'YELLOW'),
-        unitPrice: Number(it.unitPrice ?? 0),
-        lastScannedAt: it.lastScannedAt ? String(it.lastScannedAt) : undefined,
-        notes: it.notes ? String(it.notes) : undefined,
-      }));
+      .map((it, idx) => extractItem(it, idx));
   }
 
   // Case 2: String format

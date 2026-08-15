@@ -116,21 +116,34 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // List available camera devices on active
+  // List available camera devices on active with strict back/environment preference
   useEffect(() => {
     if (cameraActive) {
       Html5Qrcode.getCameras()
         .then((devices) => {
           if (devices && devices.length > 0) {
             setCameras(devices);
-            // Default to environment/back camera if possible, otherwise the first camera found
-            const backCam = devices.find(
-              (d) =>
-                (d.label || '').toLowerCase().includes('back') ||
-                (d.label || '').toLowerCase().includes('rear') ||
-                (d.label || '').toLowerCase().includes('environment')
-            );
-            setSelectedCameraId(backCam ? backCam.id : devices[0].id);
+            // Strictly default to environment / back / rear camera
+            const backCam = devices.find((d) => {
+              const label = (d.label || '').toLowerCase();
+              return (
+                label.includes('back') ||
+                label.includes('rear') ||
+                label.includes('environment') ||
+                label.includes('facing back') ||
+                label.includes('กล้องหลัง') ||
+                label.includes('0, facing back') ||
+                label.includes('wide')
+              );
+            });
+            if (backCam) {
+              setSelectedCameraId(backCam.id);
+            } else if (devices.length > 1) {
+              // On many phones the last device in list is the rear main camera
+              setSelectedCameraId(devices[devices.length - 1].id);
+            } else {
+              setSelectedCameraId(devices[0].id);
+            }
           }
         })
         .catch((err) => {
@@ -202,7 +215,7 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
     latestScanContext.current = { activeBranch, onScanBarcode, selectedLocation };
   }, [activeBranch, onScanBarcode, selectedLocation]);
 
-  // HTML5 Barcode/QR Code Camera scanner implementation
+  // HTML5 Barcode/QR Code Camera scanner implementation with resilient fallbacks
   useEffect(() => {
     if (cameraActive) {
       setCameraError(null);
@@ -226,47 +239,68 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
           });
           scannerRef.current = html5QrCode;
           
-          const videoConstraints: MediaTrackConstraints = selectedCameraId
-            ? { deviceId: { exact: selectedCameraId }, width: { ideal: 1280 }, height: { ideal: 720 }, advanced: [{ focusMode: 'continuous' } as any] }
-            : { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 }, advanced: [{ focusMode: 'continuous' } as any] };
+          // Primary constraint: Back camera preferred
+          const primaryConstraints: any = selectedCameraId
+            ? { deviceId: { exact: selectedCameraId } }
+            : { facingMode: "environment" };
 
-          const config = {
-            fps: 15,
-            qrbox: (width: number, height: number) => {
-              const minDim = Math.min(width, height);
-              return { width: Math.floor(minDim * 0.85), height: Math.floor(minDim * 0.55) };
+          const scanConfig = {
+            fps: 24, // High frame rate for rapid barcode detection
+            qrbox: (viewWidth: number, viewHeight: number) => {
+              const minDim = Math.min(viewWidth, viewHeight);
+              const boxWidth = Math.min(Math.floor(viewWidth * 0.88), 360);
+              const boxHeight = Math.min(Math.floor(minDim * 0.65), 240);
+              return { width: boxWidth, height: boxHeight };
             },
+            aspectRatio: 1.333333,
           };
 
-          html5QrCode.start(
-            videoConstraints,
-            config,
-            (decodedText) => handleBarcodeScanned(decodedText),
-            () => {}
-          ).catch((err) => {
-            console.error("Camera start failed", err);
-            if (selectedCameraId) {
-              const retryConstraints: MediaTrackConstraints = { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 }, advanced: [{ focusMode: 'continuous' } as any] };
-              html5QrCode.start(
-                retryConstraints,
-                config,
+          const launchScanner = async () => {
+            try {
+              // Attempt 1: Direct back camera with chosen id or environment facingMode
+              await html5QrCode.start(
+                primaryConstraints,
+                scanConfig,
                 (decodedText) => handleBarcodeScanned(decodedText),
                 () => {}
-              ).catch((retryErr) => {
-                setCameraError("ไม่สามารถเข้าถึงกล้องถ่ายภาพในอุปกรณ์นี้ได้ค่ะ (กรุณาอนุญาตสิทธิ์กล้องในบราวเซอร์ หรือลองใช้วิธี 'ถ่ายรูปบาร์โค้ด' ด้านล่างแทน)");
-                setCameraActive(false);
-              });
-            } else {
-              setCameraError("ไม่สามารถเข้าถึงกล้องถ่ายภาพในอุปกรณ์นี้ได้ค่ะ (กรุณาอนุญาตสิทธิ์กล้องในบราวเซอร์ หรือลองใช้วิธี 'ถ่ายรูปบาร์โค้ด' ด้านล่างแทน)");
-              setCameraActive(false);
+              );
+            } catch (err1) {
+              console.warn("Attempt 1 camera start failed, trying facingMode environment fallback:", err1);
+              try {
+                // Attempt 2: Flexible environment constraint without exact deviceId
+                await html5QrCode.start(
+                  { facingMode: "environment" },
+                  { fps: 20, qrbox: { width: 280, height: 180 } },
+                  (decodedText) => handleBarcodeScanned(decodedText),
+                  () => {}
+                );
+              } catch (err2) {
+                console.warn("Attempt 2 fallback failed, trying generic video stream:", err2);
+                try {
+                  // Attempt 3: Any available video stream
+                  const fallbackId = cameras.length > 0 ? cameras[0].id : undefined;
+                  await html5QrCode.start(
+                    fallbackId ? { deviceId: fallbackId } : { facingMode: "user" },
+                    { fps: 15 },
+                    (decodedText) => handleBarcodeScanned(decodedText),
+                    () => {}
+                  );
+                } catch (finalErr) {
+                  console.error("All camera start attempts failed:", finalErr);
+                  setCameraError("ไม่สามารถเปิดใช้งานกล้องวิดีโอบนอุปกรณ์นี้ได้ค่ะ (กรุณากด 'อนุญาตการใช้กล้อง' ในเบราว์เซอร์ หรือใช้วิธี 'ถ่ายรูปบาร์โค้ด' ด้านล่างแทนได้เลยค่ะ)");
+                  setCameraActive(false);
+                }
+              }
             }
-          });
+          };
+
+          launchScanner();
         } catch (e) {
           console.error("Scanner init error", e);
           setCameraError("เกิดข้อผิดพลาดในการเปิดระบบสแกนเนอร์");
           setCameraActive(false);
         }
-      }, 400);
+      }, 350);
 
       return () => {
         clearTimeout(timer);
@@ -850,150 +884,128 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
             />
           </div>
 
-          {/* List items with instant status coloring and tags */}
-          <div className="divide-y divide-slate-100">
+          {/* Minimal Mobile Product List - Clean SKU, 0/1 Count, Large Thumb +/- Buttons, and MATCH Highlight */}
+          <div className="p-3 sm:p-4 space-y-2.5">
             {filteredItemsToView.length === 0 ? (
-              <div className="p-12 text-center text-slate-400 text-xs">
-                <Box className="w-10 h-10 text-slate-200 mx-auto mb-3" />
-                <span>ไม่พบสินค้าในรหัสลังหรือบาร์โค้ดนี้</span>
+              <div className="p-12 text-center text-slate-400 text-xs bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                <Box className="w-10 h-10 text-slate-300 mx-auto mb-2" />
+                <span className="font-bold">ไม่พบสินค้าในรหัสลังหรือการค้นหานี้</span>
               </div>
             ) : (
               filteredItemsToView.map((item, index) => {
-                const thumbnail = getThumbnailForProduct(item.name, item.category);
-                
-                // Calculate live status indicators instantly to ensure color is perfectly reactive!
-                const isUncounted = item.scannedQty === 0 && item.systemQty > 0;
-                const isMatch = item.scannedQty === item.systemQty && item.scannedQty > 0;
-                const isShortage = item.scannedQty < item.systemQty && item.scannedQty > 0;
+                const isMatch = item.scannedQty === item.systemQty;
+                const isShortage = item.scannedQty < item.systemQty;
                 const isOver = item.scannedQty > item.systemQty;
 
-                let cardBgClass = 'bg-white hover:bg-slate-50';
-                let leftBorderClass = 'border-l-4 border-l-slate-200';
-                let statusBadge = (
-                  <span className="text-xs font-bold text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400"></span>
-                    ยังไม่ได้สแกน
+                // Dynamic background and border styling based on audit status
+                let rowCardClass = 'bg-white border-slate-200 text-slate-900 shadow-2xs hover:border-slate-300';
+                let badgeEl = (
+                  <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                    รอสแกน
                   </span>
                 );
-                let countLabelClass = 'bg-slate-100 text-slate-700 border border-slate-200';
 
                 if (isMatch) {
-                  cardBgClass = 'bg-emerald-50/70 hover:bg-emerald-100/60';
-                  leftBorderClass = 'border-l-4 border-l-emerald-500';
-                  statusBadge = (
-                    <span className="text-xs font-bold text-emerald-800 bg-emerald-100 border border-emerald-200 px-2 py-0.5 rounded flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-                      ครบถ้วน (Match)
+                  // Light green background highlight when MATCH
+                  rowCardClass = 'bg-emerald-50/95 border-emerald-400 text-emerald-950 shadow-xs ring-1 ring-emerald-300/80';
+                  badgeEl = (
+                    <span className="text-[10px] font-black text-white bg-emerald-600 px-2 py-0.5 rounded flex items-center gap-1 shadow-2xs">
+                      <Check className="w-3.5 h-3.5 stroke-[3]" />
+                      MATCH
                     </span>
                   );
-                  countLabelClass = 'bg-emerald-600 text-white font-extrabold';
                 } else if (isShortage) {
-                  cardBgClass = 'bg-rose-50 hover:bg-rose-100/75';
-                  leftBorderClass = 'border-l-4 border-l-rose-500';
-                  statusBadge = (
-                    <span className="text-xs font-bold text-rose-800 bg-rose-100 border border-rose-200 px-2 py-0.5 rounded flex items-center gap-1.5 animate-pulse">
-                      <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping"></span>
-                      ขาดอีก -{item.systemQty - item.scannedQty} ชิ้น (Short)
-                    </span>
-                  );
-                  countLabelClass = 'bg-rose-500 text-white font-extrabold shadow-sm';
+                  if (item.scannedQty > 0) {
+                    rowCardClass = 'bg-rose-50/70 border-rose-300 text-rose-950 shadow-2xs';
+                    badgeEl = (
+                      <span className="text-[10px] font-black text-rose-800 bg-rose-100 px-2 py-0.5 rounded border border-rose-200">
+                        ขาด -{item.systemQty - item.scannedQty}
+                      </span>
+                    );
+                  }
                 } else if (isOver) {
-                  cardBgClass = 'bg-amber-50 hover:bg-amber-100/70';
-                  leftBorderClass = 'border-l-4 border-l-amber-500';
-                  statusBadge = (
-                    <span className="text-xs font-bold text-amber-800 bg-amber-100 border border-amber-200 px-2 py-0.5 rounded flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-                      เกินมา +{item.scannedQty - item.systemQty} ชิ้น (Over)
+                  rowCardClass = 'bg-amber-50/95 border-amber-400 text-amber-950 shadow-xs';
+                  badgeEl = (
+                    <span className="text-[10px] font-black text-amber-900 bg-amber-200 px-2 py-0.5 rounded border border-amber-300">
+                      เกิน +{item.scannedQty - item.systemQty}
                     </span>
                   );
-                  countLabelClass = 'bg-amber-500 text-slate-900 font-extrabold shadow-xs';
-                } else if (item.scannedQty === 0 && item.systemQty === 0) {
-                  cardBgClass = 'bg-amber-50/50 hover:bg-amber-100/40';
-                  leftBorderClass = 'border-l-4 border-l-amber-400';
-                  statusBadge = (
-                    <span className="text-xs font-bold text-amber-800 bg-amber-100 border border-amber-200 px-2 py-0.5 rounded flex items-center gap-1.5">
-                      <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-                      เกินมา (ไม่มีในระบบ)
-                    </span>
-                  );
-                  countLabelClass = 'bg-amber-400 text-slate-950 font-extrabold';
                 }
+
+                // Robust SKU and Name determination
+                const displaySku =
+                  item.sku && String(item.sku).trim() !== ''
+                    ? String(item.sku).trim()
+                    : item.barcode && String(item.barcode).trim() !== ''
+                    ? String(item.barcode).trim()
+                    : item.name && String(item.name).trim() !== ''
+                    ? String(item.name).trim()
+                    : `SKU-${index + 1}`;
+
+                const displayName =
+                  item.name && String(item.name).trim() !== '' && String(item.name).trim() !== displaySku
+                    ? String(item.name).trim()
+                    : '';
 
                 return (
                   <div
                     key={`${item.id}-${index}`}
-                    className={`px-4 py-4 flex flex-col gap-3 transition ${cardBgClass} ${leftBorderClass}`}
+                    id={`mobile-item-${displaySku}`}
+                    className={`p-3 sm:p-3.5 rounded-2xl border-2 transition-all flex items-center justify-between gap-3 ${rowCardClass}`}
                   >
-                    {/* Top: SKU Card full-width across the item */}
-                    <div className="bg-slate-100/95 px-3.5 py-3 rounded-xl border border-slate-200 shadow-3xs w-full">
-                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-1.5">
-                        <div className="min-w-0">
-                          <span className="text-[10px] font-black text-slate-500 uppercase tracking-wider block mb-0.5 font-sans">รหัสสินค้า (SKU):</span>
-                          <p className="text-xl font-black text-slate-950 break-all leading-none font-mono tracking-wide">
-                            {item.sku}
-                          </p>
-                        </div>
-                        <div className="bg-white/80 px-2.5 py-1 rounded border border-slate-200/60 font-mono text-xs text-slate-700 w-fit">
-                          บาร์โค้ด (Barcode): <strong className="text-slate-950 font-extrabold">{item.barcode}</strong>
-                        </div>
+                    {/* Left: Prominent SKU, Product Name (if available), and Status Badge */}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-base sm:text-lg font-black font-mono tracking-wide text-slate-900 break-all leading-tight">
+                          {displaySku}
+                        </span>
+                        {badgeEl}
                       </div>
-                      
-                      <div className="mt-1.5 pt-1.5 border-t border-slate-200/60">
-                        <span className="text-[10px] font-black text-slate-400 block uppercase font-sans">ชื่อสินค้า:</span>
-                        <p className="text-xs font-bold text-slate-800 leading-tight">
-                          {item.name}
+                      {displayName && (
+                        <p className="text-xs font-semibold text-slate-600 truncate mt-1" title={displayName}>
+                          {displayName}
                         </p>
-                      </div>
+                      )}
                     </div>
 
-                    {/* Bottom: Info and Counters in side-by-side row */}
-                    <div className="flex items-center justify-between gap-3 w-full">
-                      {/* Left: Box location & Dynamic Status Badges (No barcode) */}
-                      <div className="flex flex-col gap-1.5 min-w-0">
-                        <span className="text-xs font-black text-amber-800 bg-amber-50 border border-amber-200 px-2.5 py-1 rounded-md w-fit font-mono">
-                          📦 ลัง: {item.location}
+                    {/* Right: Scanned / System Count & Large +/- Thumb Buttons */}
+                    <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+                      {/* Count Display (e.g. 0 / 1, 1 / 1) */}
+                      <div className="bg-white/95 px-2.5 sm:px-3 py-1.5 rounded-xl border border-slate-200/90 shadow-2xs flex items-baseline gap-1 font-mono text-center min-w-[62px] justify-center select-none">
+                        <span className={`text-xl sm:text-2xl font-black ${
+                          isMatch ? 'text-emerald-600' : isOver ? 'text-amber-600' : 'text-slate-900'
+                        }`}>
+                          {item.scannedQty}
                         </span>
-                        {statusBadge}
+                        <span className="text-sm font-bold text-slate-400">/</span>
+                        <span className="text-sm sm:text-base font-bold text-slate-500">
+                          {item.systemQty}
+                        </span>
                       </div>
 
-                      {/* Right: Counters */}
-                      <div className="flex items-center gap-2 shrink-0">
-                        {/* +/- adjustment buttons with comfortable touch size */}
-                        <div className="flex items-center gap-1.5 bg-white rounded-lg p-1 border border-slate-200 shadow-2xs">
-                          <button
-                            type="button"
-                            onClick={() => handleUpdateItemQtyInModal(item.id, item.scannedQty - 1)}
-                            className="w-8 h-8 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center transition active:scale-90 font-bold"
-                          >
-                            <Minus className="w-4 h-4" />
-                          </button>
-                          
-                          <div className="flex flex-col items-center px-1">
-                            <input
-                              type="number"
-                              min="0"
-                              value={item.scannedQty}
-                              onChange={(e) => handleUpdateItemQtyInModal(item.id, parseInt(e.target.value) || 0)}
-                              className="w-10 bg-transparent text-center text-base font-black font-mono text-slate-800 focus:outline-none"
-                            />
-                            <span className="text-[9px] text-slate-400 font-mono">/{item.systemQty}</span>
-                          </div>
+                      {/* Large Thumb-Friendly +/- Touch Buttons */}
+                      <div className="flex items-center gap-1.5">
+                        {/* Minus Button */}
+                        <button
+                          type="button"
+                          id={`btn-minus-${displaySku}`}
+                          onClick={() => handleUpdateItemQtyInModal(item.id, Math.max(0, item.scannedQty - 1))}
+                          className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-slate-100 hover:bg-slate-200 active:bg-slate-300 text-slate-800 flex items-center justify-center font-black select-none active:scale-90 transition shadow-2xs border border-slate-300 cursor-pointer"
+                          title="ลดจำนวน 1 ชิ้น"
+                        >
+                          <Minus className="w-5 h-5 stroke-[3]" />
+                        </button>
 
-                          <button
-                            type="button"
-                            onClick={() => handleUpdateItemQtyInModal(item.id, item.scannedQty + 1)}
-                            className="w-8 h-8 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 flex items-center justify-center transition active:scale-90 font-bold"
-                          >
-                            <Plus className="w-4 h-4" />
-                          </button>
-                        </div>
-
-                        {/* Display Count Box with Dynamic Class */}
-                        <div className="text-right min-w-[62px]">
-                          <span className={`inline-block text-xs font-black px-2.5 py-2 rounded-lg text-center w-full shadow-2xs ${countLabelClass}`}>
-                            {item.scannedQty} ชิ้น
-                          </span>
-                        </div>
+                        {/* Plus Button */}
+                        <button
+                          type="button"
+                          id={`btn-plus-${displaySku}`}
+                          onClick={() => handleUpdateItemQtyInModal(item.id, item.scannedQty + 1)}
+                          className="w-11 h-11 sm:w-12 sm:h-12 rounded-xl bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white flex items-center justify-center font-black select-none active:scale-90 transition shadow-xs cursor-pointer"
+                          title="เพิ่มจำนวน 1 ชิ้น"
+                        >
+                          <Plus className="w-5 h-5 stroke-[3]" />
+                        </button>
                       </div>
                     </div>
                   </div>

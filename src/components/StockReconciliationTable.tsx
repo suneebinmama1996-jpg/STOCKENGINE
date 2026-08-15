@@ -423,8 +423,8 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
 
                     {/* SKU / Barcode */}
                     <td className="py-2 px-2.5">
-                      <div className="font-mono font-bold text-slate-900">{item.sku}</div>
-                      <div className="font-mono text-[10px] text-slate-500">{item.barcode}</div>
+                      <div className="font-mono font-bold text-slate-900">{item.sku || item.barcode || item.name || 'SKU-001'}</div>
+                      <div className="font-mono text-[10px] text-slate-500">{item.barcode || item.sku || '-'}</div>
                     </td>
 
                     {/* Name & Category */}
