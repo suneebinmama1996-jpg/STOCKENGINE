@@ -680,7 +680,8 @@ export default function App() {
     isNewBranch?: boolean,
     auditDate?: string,
     scheduleDay?: 'THURSDAY' | 'FRIDAY' | 'OTHER',
-    onProgress?: (progress: ImportProgress) => void
+    onProgress?: (progress: ImportProgress) => void,
+    importMode: 'overwrite' | 'append' = 'overwrite'
   ) => {
     setIsSubmitting(true);
     // Pause auto-refresh polling immediately to prevent background fetch from overwriting data
@@ -721,7 +722,7 @@ export default function App() {
         setSelectedBranchId(newBranch.id);
 
         // 2. Save new branch items to Google Sheets via unlimited chunked processing
-        await importItemsToBranchInSheets(newBranch.id, formattedItems, onProgress);
+        await importItemsToBranchInSheets(newBranch.id, formattedItems, onProgress, importMode);
       } else {
         const branch = branches.find((b) => b.id === branchIdOrNewName || b.code === branchIdOrNewName || b.name === branchIdOrNewName);
         if (!branch) {
@@ -740,14 +741,17 @@ export default function App() {
           }))
         );
 
-        // Merge newly imported items with existing branch items
-        const combinedItems = [...branch.items, ...newProcessed];
+        // In overwrite mode: replace existing branch items with newProcessed
+        // In append mode: merge new items with existing items
+        const finalItems = importMode === 'overwrite'
+          ? newProcessed
+          : [...branch.items, ...newProcessed];
 
         const updated: Branch = {
           ...branch,
           auditDate: effectiveAuditDate,
           auditScheduleDay: scheduleDay || branch.auditScheduleDay || 'OTHER',
-          items: combinedItems,
+          items: finalItems,
         };
 
         // 1. Local Cache First: Save to LocalStorage, UI State, and IndexedDB immediately
@@ -758,7 +762,7 @@ export default function App() {
         setSelectedBranchId(branch.id);
 
         // 2. Post importItems chunked loop to Google Apps Script until 100%
-        await importItemsToBranchInSheets(branch.id, combinedItems, onProgress);
+        await importItemsToBranchInSheets(branch.id, finalItems, onProgress, importMode);
       }
       return true;
     } catch (err: any) {

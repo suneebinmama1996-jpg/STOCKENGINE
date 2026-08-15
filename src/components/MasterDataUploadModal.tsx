@@ -25,7 +25,8 @@ interface MasterDataUploadModalProps {
     isNewBranch?: boolean,
     auditDate?: string,
     scheduleDay?: 'THURSDAY' | 'FRIDAY' | 'OTHER',
-    onProgress?: (progress: ImportProgress) => void
+    onProgress?: (progress: ImportProgress) => void,
+    importMode?: 'overwrite' | 'append'
   ) => Promise<boolean | void> | void;
   onClose: () => void;
 }
@@ -36,6 +37,7 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
   onClose,
 }) => {
   const [activeMode, setActiveMode] = useState<'FILE' | 'PASTE'>('FILE');
+  const [importMode, setImportMode] = useState<'overwrite' | 'append'>('overwrite');
   const [targetBranchOption, setTargetBranchOption] = useState<string>(
     branches[0]?.id || 'NEW_BRANCH'
   );
@@ -184,11 +186,11 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
       if (targetBranchOption === 'NEW_BRANCH') {
         await onImportItemsToBranch(newBranchName, itemsWithDate, true, auditDate, undefined, (progress) => {
           setUploadProgress(progress);
-        });
+        }, importMode);
       } else {
         await onImportItemsToBranch(targetBranchOption, itemsWithDate, false, auditDate, undefined, (progress) => {
           setUploadProgress(progress);
-        });
+        }, importMode);
       }
 
       // Modal is only closed after all chunks successfully reach 100%
@@ -344,6 +346,69 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
                   วันศุกร์
                 </button>
               </div>
+            </div>
+          </div>
+
+          {/* Import Mode Selector: Overwrite vs Append */}
+          <div className="bg-slate-50 p-3 rounded border border-slate-200 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                <span>โหมดการนำเข้าข้อมูล (Import Mode):</span>
+              </span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-800">
+                {importMode === 'overwrite' ? '🔄 นำเข้าแบบแทนที่ (Overwrite)' : '➕ นำเข้าต่อท้าย (Append)'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setImportMode('overwrite')}
+                className={`p-2.5 rounded-md border text-left transition flex items-start gap-2.5 ${
+                  importMode === 'overwrite'
+                    ? 'bg-blue-50/80 border-blue-500 ring-1 ring-blue-500 shadow-2xs'
+                    : 'bg-white border-slate-200 hover:bg-slate-100/80'
+                }`}
+              >
+                <div className={`w-4 h-4 rounded-full border flex items-center justify-center mt-0.5 shrink-0 ${
+                  importMode === 'overwrite' ? 'border-blue-600 bg-blue-600' : 'border-slate-300 bg-white'
+                }`}>
+                  {importMode === 'overwrite' && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-slate-900 flex items-center gap-1">
+                    <span>นำเข้าแบบแทนที่ (Overwrite)</span>
+                    <span className="text-[9px] px-1 py-0.2 bg-amber-100 text-amber-800 rounded font-semibold">แนะนำ</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-0.5 leading-tight">
+                    ล้างรายการสินค้าเดิมของสาขานี้ในแท็บ Stock_Data และบันทึกชุดใหม่ทับลงไป
+                  </p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setImportMode('append')}
+                className={`p-2.5 rounded-md border text-left transition flex items-start gap-2.5 ${
+                  importMode === 'append'
+                    ? 'bg-blue-50/80 border-blue-500 ring-1 ring-blue-500 shadow-2xs'
+                    : 'bg-white border-slate-200 hover:bg-slate-100/80'
+                }`}
+              >
+                <div className={`w-4 h-4 rounded-full border flex items-center justify-center mt-0.5 shrink-0 ${
+                  importMode === 'append' ? 'border-blue-600 bg-blue-600' : 'border-slate-300 bg-white'
+                }`}>
+                  {importMode === 'append' && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                </div>
+                <div>
+                  <div className="text-xs font-bold text-slate-900">
+                    นำเข้าต่อท้าย (Append)
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-0.5 leading-tight">
+                    เพิ่มรายการสินค้าใหม่ต่อท้ายรายการสินค้าเดิมที่มีอยู่แล้วในระบบ
+                  </p>
+                </div>
+              </button>
             </div>
           </div>
 

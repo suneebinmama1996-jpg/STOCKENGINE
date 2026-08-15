@@ -139,6 +139,8 @@ export interface MonthlyAuditScorecard {
   overQty: number;
   netVariance: number;
   accuracyRate: number; // (matchCount / totalItems) * 100
+  qaAccuracyRate: number; // QA accuracy based on physical units match
+  skuaAccuracyRate: number; // SKUA accuracy based on SKU line match
   grade: 'A' | 'B' | 'C' | 'D';
   currentStatus: AuditStatus;
   lastAuditDate?: string;
@@ -146,18 +148,24 @@ export interface MonthlyAuditScorecard {
 
 export interface MonthlyCategoryBreakdown {
   category: string;
+  categoryCode?: string;
+  categoryLabel?: string;
+  completedBranchesCount?: number;
+  totalBranchesAuditing?: number;
   itemsCount: number;
   totalScannedQty: number;
   totalSystemQty: number;
   matchCount: number;
   shortageCount: number;
   overCount: number;
+  mismatchSwapCount?: number;
   shortageQty: number;
   overQty: number;
   netVariance: number;
   accuracyRate: number;
   shortageRate: number;
   overRate: number;
+  riskLevel?: 'LOW' | 'MEDIUM' | 'HIGH';
 }
 
 export interface MonthlyPerformanceSummary {
@@ -167,6 +175,8 @@ export interface MonthlyPerformanceSummary {
   activeBranches: number;
   overallSubmissionRate: number;
   overallAccuracyRate: number;
+  overallQaAccuracyRate?: number;
+  overallSkuaAccuracyRate?: number;
   gradeACount: number;
   gradeBCount: number;
   gradeCCount: number;
@@ -177,5 +187,13 @@ export interface MonthlyPerformanceSummary {
   totalScannedUnits: number;
   totalShortageUnits: number;
   totalOverUnits: number;
+  totalKpiStockScore: number; // 0-100 score
+  kpiGrade: 'A+' | 'A' | 'B' | 'C' | 'D';
+  kpiPillars: {
+    stockAccuracyScore: number; // max 40
+    submissionScore: number; // max 30
+    varianceControlScore: number; // max 20
+    auditResolutionScore: number; // max 10
+  };
 }
 

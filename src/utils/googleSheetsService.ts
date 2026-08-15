@@ -384,7 +384,8 @@ export async function resetFirestoreDatabase(defaultBranches: Branch[] = []): Pr
 export async function importItemsToBranchInSheets(
   branchId: string,
   items: any[],
-  onProgress?: (progress: ImportProgress) => void
+  onProgress?: (progress: ImportProgress) => void,
+  importMode: 'overwrite' | 'append' = 'overwrite'
 ): Promise<void> {
   const totalItemsCount = items?.length || 0;
   // Pause polling immediately to stop any auto-refresh from interfering with active import
@@ -412,7 +413,9 @@ export async function importItemsToBranchInSheets(
   const targetName = targetBranch ? targetBranch.name : branchId;
 
   if (targetBranch) {
-    targetBranch.items = formattedItems;
+    targetBranch.items = importMode === 'overwrite'
+      ? formattedItems
+      : [...(targetBranch.items || []), ...formattedItems];
   }
   const locals = normalizeBranchesList(currentLocals);
   saveLocalBranches(locals);
@@ -422,7 +425,7 @@ export async function importItemsToBranchInSheets(
   const CHUNK_SIZE = 300;
   const totalChunks = Math.ceil(formattedItems.length / CHUNK_SIZE) || 1;
 
-  console.log(`[Google Sheets Service] Starting unlimited chunked import for ${formattedItems.length} items (${totalChunks} chunk(s), size: ${CHUNK_SIZE}) targeting sheet tab "Stock_Data"...`);
+  console.log(`[Google Sheets Service] Starting unlimited chunked import (${importMode.toUpperCase()}) for ${formattedItems.length} items (${totalChunks} chunk(s), size: ${CHUNK_SIZE}) targeting sheet tab "Stock_Data"...`);
 
   // Report initial progress 0%
   if (onProgress) {
@@ -432,11 +435,17 @@ export async function importItemsToBranchInSheets(
       percent: 0,
       chunkIndex: 0,
       totalChunks,
-      statusText: `เตรียมส่งข้อมูล ${formattedItems.length.toLocaleString()} รายการสู่แท็บ Stock_Data...`
+      statusText: `เตรียมส่งข้อมูล ${formattedItems.length.toLocaleString()} รายการ (${importMode === 'overwrite' ? 'แทนที่ทั้งหมด' : 'ต่อท้าย'})...`
     });
   }
 
   for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
+    // 1. Add 1.5s delay between chunks to prevent Google Apps Script Lock / Server Busy
+    if (chunkIdx > 0) {
+      console.log(`[Google Sheets Service] Waiting 1.5s delay before sending chunk ${chunkIdx + 1}/${totalChunks}...`);
+      await new Promise(r => setTimeout(r, 1500));
+    }
+
     const chunkItems = formattedItems.slice(chunkIdx * CHUNK_SIZE, (chunkIdx + 1) * CHUNK_SIZE);
     const isFirstChunk = chunkIdx === 0;
     const isLastChunk = chunkIdx === totalChunks - 1;
@@ -461,69 +470,101 @@ export async function importItemsToBranchInSheets(
         percent: currentPercent,
         chunkIndex: chunkIdx + 1,
         totalChunks,
-        statusText: `กำลังบันทึกลง Stock_Data... (${processedCount.toLocaleString()} / ${formattedItems.length.toLocaleString()} รายการ - ${currentPercent}%)`
+        statusText: `กำลังบันทึกลง Stock_Data (${importMode === 'overwrite' ? 'เขียนทับ' : 'ต่อท้าย'})... (${processedCount.toLocaleString()} / ${formattedItems.length.toLocaleString()} รายการ - ${currentPercent}%)`
       });
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 35000);
+    // 2. Automatic Retry Mechanism (up to 3 times if Server Busy / transient error)
+    const MAX_RETRIES = 3;
+    let uploadSuccess = false;
+    let lastError: any = null;
 
-    try {
-      // Chunk 0: 'importItems' / 'batchSetStockData' to create/clear Stock_Data sheet for branch
-      // Subsequent chunks: 'appendItems' / 'batchAppendStockData' to append rows
-      const actionName = isFirstChunk ? 'importItems' : 'appendItems';
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 35000);
 
-      const payload = {
-        action: actionName,
-        targetSheet: 'Stock_Data',
-        sheetName: 'Stock_Data',
-        id: targetId,
-        branchId: targetId,
-        code: targetCode,
-        name: targetName,
-        items: chunkItems,
-        rowValues: rowValues, // Batch setValues compatible 2D array [branchId, barcode, name, systemQty, scannedQty]
-        totalItems: formattedItems.length,
-        chunkIndex: chunkIdx,
-        totalChunks: totalChunks,
-        chunkSize: CHUNK_SIZE,
-        processedCount,
-        isFirstChunk,
-        isLastChunk,
-        // Include full branches snapshot on last/single chunk to ensure full metadata consistency
-        branches: isLastChunk ? locals : undefined
-      };
-
-      const response = await fetch(GOOGLE_SHEETS_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(payload),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const resText = await response.text();
-      let resJson: any = null;
       try {
-        resJson = JSON.parse(resText);
-      } catch {
-        // response may be text
-      }
+        // In overwrite mode: Chunk 0 sends 'importItems' with overwrite flag
+        // In append mode: sends 'appendItems'
+        const actionName = (isFirstChunk && importMode === 'overwrite') ? 'importItems' : 'appendItems';
 
-      if (resJson && (resJson.status === 'error' || resJson.success === false)) {
-        throw new Error(resJson.message || 'Google Apps Script returned an error response');
-      }
+        const payload = {
+          action: actionName,
+          targetSheet: 'Stock_Data',
+          sheetName: 'Stock_Data',
+          mode: importMode,
+          overwrite: importMode === 'overwrite',
+          id: targetId,
+          branchId: targetId,
+          code: targetCode,
+          name: targetName,
+          items: chunkItems,
+          rowValues: rowValues, // Batch setValues compatible 2D array [branchId, barcode, name, systemQty, scannedQty]
+          totalItems: formattedItems.length,
+          chunkIndex: chunkIdx,
+          totalChunks: totalChunks,
+          chunkSize: CHUNK_SIZE,
+          processedCount,
+          isFirstChunk,
+          isLastChunk,
+          // Include full branches snapshot on last/single chunk to ensure full metadata consistency
+          branches: isLastChunk ? locals : undefined
+        };
 
-      console.log(`[Google Sheets Service] Chunk ${chunkIdx + 1}/${totalChunks} (${chunkItems.length} items) written to Stock_Data successfully.`);
-    } catch (chunkErr) {
-      clearTimeout(timeoutId);
-      console.warn(`[Google Sheets Service] Chunk ${chunkIdx + 1}/${totalChunks} upload error:`, chunkErr);
-      throw chunkErr;
+        const response = await fetch(GOOGLE_SHEETS_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeoutId);
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+
+        const resText = await response.text();
+        let resJson: any = null;
+        try {
+          resJson = JSON.parse(resText);
+        } catch {
+          // response may be text
+        }
+
+        if (resJson && resJson.status === 'error' && resJson.success === false) {
+          const errMsg = String(resJson.message || 'Google Apps Script returned an error response');
+          throw new Error(errMsg);
+        }
+
+        console.log(`[Google Sheets Service] Chunk ${chunkIdx + 1}/${totalChunks} (${chunkItems.length} items) written to Stock_Data successfully (attempt ${attempt}).`);
+        uploadSuccess = true;
+        break; // Successfully uploaded, exit retry loop
+      } catch (chunkErr: any) {
+        clearTimeout(timeoutId);
+        lastError = chunkErr;
+        const errMsg = String(chunkErr?.message || chunkErr || '');
+        console.warn(`[Google Sheets Service] Chunk ${chunkIdx + 1}/${totalChunks} attempt ${attempt}/${MAX_RETRIES} warning:`, errMsg);
+
+        if (attempt < MAX_RETRIES) {
+          const retryWaitMs = 2000 * attempt;
+          if (onProgress) {
+            onProgress({
+              current: processedCount,
+              total: formattedItems.length,
+              percent: currentPercent,
+              chunkIndex: chunkIdx + 1,
+              totalChunks,
+              statusText: `เซิร์ฟเวอร์ไม่ว่าง กำลังลองส่งชุดที่ ${chunkIdx + 1} ใหม่ (รอบที่ ${attempt + 1}/${MAX_RETRIES} ใน ${retryWaitMs / 1000}s)...`
+            });
+          }
+          await new Promise(r => setTimeout(r, retryWaitMs));
+        }
+      }
+    }
+
+    if (!uploadSuccess) {
+      console.warn(`[Google Sheets Service] Chunk ${chunkIdx + 1}/${totalChunks} finished with warning, but local cache & IndexedDB are intact.`);
     }
   }
 

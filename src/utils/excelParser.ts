@@ -229,10 +229,16 @@ export function exportMonthlyPerformanceToExcel(
   if (summary) {
     const summaryData = [
       { 'หัวข้อสรุปภาพรวม': 'ประจำเดือน', 'ค่าสถิติ': summary.monthLabel },
+      { 'หัวข้อสรุปภาพรวม': 'TOTAL KPI STOCK (คะแนนเต็ม 100)', 'ค่าสถิติ': `${summary.totalKpiStockScore} / 100 (เกรด ${summary.kpiGrade})` },
+      { 'หัวข้อสรุปภาพรวม': '  - เสาหลัก 1: ความแม่นยำสต็อก (น้ำหนัก 40)', 'ค่าสถิติ': `${summary.kpiPillars?.stockAccuracyScore ?? 40} / 40` },
+      { 'หัวข้อสรุปภาพรวม': '  - เสาหลัก 2: การส่งรายงานตรงเวลา (น้ำหนัก 30)', 'ค่าสถิติ': `${summary.kpiPillars?.submissionScore ?? 30} / 30` },
+      { 'หัวข้อสรุปภาพรวม': '  - เสาหลัก 3: ควบคุมสต็อกขาด/เกิน (น้ำหนัก 20)', 'ค่าสถิติ': `${summary.kpiPillars?.varianceControlScore ?? 20} / 20` },
+      { 'หัวข้อสรุปภาพรวม': '  - เสาหลัก 4: การกระทบยอด & ธรรมาภิบาล (น้ำหนัก 10)', 'ค่าสถิติ': `${summary.kpiPillars?.auditResolutionScore ?? 10} / 10` },
       { 'หัวข้อสรุปภาพรวม': 'จำนวนสาขาทั้งหมด', 'ค่าสถิติ': `${summary.totalBranches} สาขา` },
       { 'หัวข้อสรุปภาพรวม': 'สาขาที่ตรวจนับในเดือนนี้', 'ค่าสถิติ': `${summary.activeBranches} สาขา` },
       { 'หัวข้อสรุปภาพรวม': 'อัตราการส่งงานเฉลี่ย (Submission Rate)', 'ค่าสถิติ': `${summary.overallSubmissionRate}%` },
-      { 'หัวข้อสรุปภาพรวม': 'ความแม่นยำรวม (Overall Accuracy)', 'ค่าสถิติ': `${summary.overallAccuracyRate}%` },
+      { 'หัวข้อสรุปภาพรวม': 'ความแม่นยำรวม SKUA (SKU Level Accuracy)', 'ค่าสถิติ': `${summary.overallAccuracyRate}%` },
+      { 'หัวข้อสรุปภาพรวม': 'ความแม่นยำรวม QA (Unit Level Accuracy)', 'ค่าสถิติ': `${summary.overallQaAccuracyRate ?? summary.overallAccuracyRate}%` },
       { 'หัวข้อสรุปภาพรวม': 'สาขาเกรด A (>=95%)', 'ค่าสถิติ': `${summary.gradeACount} สาขา` },
       { 'หัวข้อสรุปภาพรวม': 'สาขาเกรด B (85-94%)', 'ค่าสถิติ': `${summary.gradeBCount} สาขา` },
       { 'หัวข้อสรุปภาพรวม': 'สาขาเกรด C (<85%)', 'ค่าสถิติ': `${summary.gradeCCount} สาขา` },
@@ -245,7 +251,7 @@ export function exportMonthlyPerformanceToExcel(
       { 'หัวข้อสรุปภาพรวม': 'ยอดสต็อกเกินรวม (Over Units)', 'ค่าสถิติ': `${summary.totalOverUnits.toLocaleString()} ชิ้น` },
     ];
     const wsSummary = XLSX.utils.json_to_sheet(summaryData);
-    XLSX.utils.book_append_sheet(workbook, wsSummary, 'ภาพรวมผู้บริหาร (Overview)');
+    XLSX.utils.book_append_sheet(workbook, wsSummary, 'ภาพรวมผู้บริหาร (Overview & KPI)');
   }
 
   // Sheet 2: Branch Scorecard
@@ -259,15 +265,16 @@ export function exportMonthlyPerformanceToExcel(
     'อัตราการส่งงาน (%)': `${s.submissionRate}%`,
     'หมวดหมู่ที่ตรวจนับ': s.categoriesAudited.join(', ') || 'ทั่วไป',
     'รายการสินค้าทั้งหมด (SKU)': s.totalItems,
-    'รายการตรงตามระบบ (MATCH)': s.matchCount,
-    'รายการขาด (SHORTAGE)': s.shortageCount,
-    'รายการเกิน (OVER)': s.overCount,
-    'จำนวนระบบรวม': s.totalSystemQty,
-    'จำนวนสแกนจริงรวม': s.totalScannedQty,
+    'รายการตรงตามระบบ (MATCH SKU)': s.matchCount,
+    'รายการขาด (SHORTAGE SKU)': s.shortageCount,
+    'รายการเกิน (OVER SKU)': s.overCount,
+    'จำนวนระบบรวม (System Units)': s.totalSystemQty,
+    'จำนวนสแกนจริงรวม (Scanned Units)': s.totalScannedQty,
     'ยอดสต็อกขาด (ชิ้น)': s.shortageQty,
     'ยอดสต็อกเกิน (ชิ้น)': s.overQty,
     'ผลต่างสุทธิ (Net Variance)': s.netVariance,
-    'คะแนนความแม่นยำ (%)': `${s.accuracyRate}%`,
+    '% ความแม่นยำ QA (Unit Accuracy)': `${s.qaAccuracyRate ?? s.accuracyRate}%`,
+    '% ความแม่นยำ SKUA (SKU Accuracy)': `${s.skuaAccuracyRate ?? s.accuracyRate}%`,
     'เกรดประเมิน (Grade)': s.grade,
     'สถานะปัจจุบัน': s.currentStatus,
     'วันที่ตรวจล่าสุด': s.lastAuditDate || '-',
@@ -278,11 +285,14 @@ export function exportMonthlyPerformanceToExcel(
   // Sheet 3: Category Breakdown
   const categoryData = categoryBreakdowns.map((c, idx) => ({
     'ลำดับ': idx + 1,
-    'หมวดหมู่สินค้า': c.category,
+    'รหัสหมวดหมู่': c.categoryCode || c.category,
+    'หมวดหมู่สินค้า': c.categoryLabel || c.category,
+    'สถานะส่งข้อมูล': c.completedBranchesCount && c.totalBranchesAuditing ? `${c.completedBranchesCount}/${c.totalBranchesAuditing} สาขา` : 'ส่งครบแล้ว',
     'จำนวนรายการสินค้า (SKU)': c.itemsCount,
     'รายการตรงตามระบบ (MATCH)': c.matchCount,
     'รายการสต็อกขาด (SHORTAGE)': c.shortageCount,
     'รายการสต็อกเกิน (OVER)': c.overCount,
+    'รายการขาด-สลับ / รหัสสลับ (SWAP)': c.mismatchSwapCount || 0,
     'จำนวนระบบ (System Units)': c.totalSystemQty,
     'จำนวนสแกนจริง (Scanned Units)': c.totalScannedQty,
     'ยอดขาดรวม (ชิ้น)': c.shortageQty,
@@ -291,6 +301,7 @@ export function exportMonthlyPerformanceToExcel(
     'ความแม่นยำ (%)': `${c.accuracyRate}%`,
     'อัตราสต็อกขาด (%)': `${c.shortageRate}%`,
     'อัตราสต็อกเกิน (%)': `${c.overRate}%`,
+    'ระดับความเสี่ยง (Risk Level)': c.riskLevel || 'LOW',
   }));
   const wsCategory = XLSX.utils.json_to_sheet(categoryData);
   XLSX.utils.book_append_sheet(workbook, wsCategory, 'วิเคราะห์หมวดหมู่ (Category)');
