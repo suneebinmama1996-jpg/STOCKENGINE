@@ -217,11 +217,48 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
     latestScanContext.current = { activeBranch, onScanBarcode, selectedLocation };
   }, [activeBranch, onScanBarcode, selectedLocation]);
 
-  // HTML5 Barcode/QR Code Camera scanner implementation supporting all barcode formats
+  // HTML5 Barcode/QR Code Camera scanner implementation with robust multi-fallback & iOS Safari unlocking
   useEffect(() => {
+    let observer: MutationObserver | null = null;
+    let unlockInterval: NodeJS.Timeout | null = null;
+
+    // Helper to enforce playsinline, muted, and autoplay on all video elements inside the camera viewport
+    const unlockVideoPlayback = () => {
+      const container = document.getElementById("camera-reader-viewport");
+      if (!container) return;
+      const videoEls = container.querySelectorAll("video");
+      videoEls.forEach((video) => {
+        video.setAttribute("playsinline", "true");
+        video.setAttribute("webkit-playsinline", "true");
+        video.setAttribute("muted", "true");
+        video.setAttribute("autoplay", "true");
+        video.muted = true;
+        video.playsInline = true;
+        video.autoplay = true;
+        if (video.paused) {
+          video.play().catch(() => {
+            // Ignore autoplay promise rejections
+          });
+        }
+      });
+    };
+
     if (cameraActive) {
       setCameraError(null);
       setTorchEnabled(false);
+
+      // Start mutation observer on camera-reader-viewport to immediately catch injected <video> elements
+      const targetNode = document.getElementById("camera-reader-viewport");
+      if (targetNode) {
+        observer = new MutationObserver(() => {
+          unlockVideoPlayback();
+        });
+        observer.observe(targetNode, { childList: true, subtree: true });
+      }
+
+      // Also set interval to check and unlock video periodically during startup
+      unlockInterval = setInterval(unlockVideoPlayback, 300);
+
       const timer = setTimeout(() => {
         try {
           const html5QrCode = new Html5Qrcode("camera-reader-viewport", {
@@ -243,21 +280,6 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
             },
           });
           scannerRef.current = html5QrCode;
-          
-          // Enhanced video constraints: HD resolution & continuous focus
-          const primaryConstraints: any = selectedCameraId
-            ? {
-                deviceId: { exact: selectedCameraId },
-                width: { ideal: 1280, min: 640 },
-                height: { ideal: 720, min: 480 },
-                advanced: [{ focusMode: "continuous" } as any],
-              }
-            : {
-                facingMode: "environment",
-                width: { ideal: 1280, min: 640 },
-                height: { ideal: 720, min: 480 },
-                advanced: [{ focusMode: "continuous" } as any],
-              };
 
           const scanConfig = {
             fps: 25, // Fast frame rate for rapid barcode detection
@@ -271,35 +293,56 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
           };
 
           const launchScanner = async () => {
+            // Step 1: Force exact back camera (Primary target for high-precision mobile scanning)
+            const level1Constraints: any = selectedCameraId
+              ? {
+                  deviceId: { exact: selectedCameraId },
+                  width: { ideal: 1280, min: 640 },
+                  height: { ideal: 720, min: 480 },
+                  advanced: [{ focusMode: "continuous" } as any],
+                }
+              : {
+                  facingMode: { exact: "environment" },
+                  width: { ideal: 1280, min: 640 },
+                  height: { ideal: 720, min: 480 },
+                  advanced: [{ focusMode: "continuous" } as any],
+                };
+
             try {
-              // Attempt 1: Direct back camera with HD constraints
               await html5QrCode.start(
-                primaryConstraints,
+                level1Constraints,
                 scanConfig,
                 (decodedText) => handleBarcodeScanned(decodedText),
                 () => {}
               );
+              unlockVideoPlayback();
             } catch (err1) {
-              console.warn("Attempt 1 camera start failed, trying facingMode environment fallback:", err1);
+              console.warn("Level 1 (exact environment) failed, falling back to Level 2 (facingMode environment):", err1);
               try {
-                // Attempt 2: Flexible environment constraint without exact deviceId
+                // Step 2: Fallback to ideal environment facingMode (Works on most Android/iOS without exact constraint support)
                 await html5QrCode.start(
-                  { facingMode: "environment" },
-                  { fps: 20, qrbox: { width: 300, height: 200 } },
+                  {
+                    facingMode: "environment",
+                    width: { ideal: 1280, min: 640 },
+                    height: { ideal: 720, min: 480 },
+                  },
+                  scanConfig,
                   (decodedText) => handleBarcodeScanned(decodedText),
                   () => {}
                 );
+                unlockVideoPlayback();
               } catch (err2) {
-                console.warn("Attempt 2 fallback failed, trying generic video stream:", err2);
+                console.warn("Level 2 failed, falling back to Level 3 (generic video stream):", err2);
                 try {
-                  // Attempt 3: Any available video stream
+                  // Step 3: Any available camera stream fallback
                   const fallbackId = cameras.length > 0 ? cameras[0].id : undefined;
                   await html5QrCode.start(
                     fallbackId ? { deviceId: fallbackId } : { facingMode: "user" },
-                    { fps: 15 },
+                    { fps: 20, qrbox: { width: 300, height: 200 } },
                     (decodedText) => handleBarcodeScanned(decodedText),
                     () => {}
                   );
+                  unlockVideoPlayback();
                 } catch (finalErr) {
                   console.error("All camera start attempts failed:", finalErr);
                   setCameraError("ไม่สามารถเปิดใช้งานกล้องวิดีโอบนอุปกรณ์นี้ได้ค่ะ (กรุณากด 'อนุญาตการใช้กล้อง' ในเบราว์เซอร์ หรือใช้วิธี 'ถ่ายรูปบาร์โค้ด' ด้านล่างแทนได้เลยค่ะ)");
@@ -319,6 +362,8 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
 
       return () => {
         clearTimeout(timer);
+        if (unlockInterval) clearInterval(unlockInterval);
+        if (observer) observer.disconnect();
         if (scannerRef.current) {
           if (scannerRef.current.isScanning) {
             scannerRef.current.stop().catch(err => console.error("Scanner stop error", err));
