@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Branch, StockItem } from '../types';
 import { safeParseItems } from '../utils/safeJsonParser';
 import {
@@ -30,7 +30,8 @@ import {
   ZapOff
 } from 'lucide-react';
 import { playScanBeep } from '../utils/stockCalculations';
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
+import jsQR from 'jsqr';
+import { BrowserMultiFormatReader } from '@zxing/library';
 
 interface PdaScannerModalProps {
   branches: Branch[];
@@ -109,24 +110,30 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
   // Camera scanning states
   const [cameraActive, setCameraActive] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [cameras, setCameras] = useState<any[]>([]);
+  const [cameras, setCameras] = useState<MediaDeviceInfo[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
   const [torchEnabled, setTorchEnabled] = useState(false);
   
-  const scannerRef = useRef<Html5Qrcode | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const zxingReaderRef = useRef<BrowserMultiFormatReader>(new BrowserMultiFormatReader());
+  const barcodeDetectorRef = useRef<any>(null);
+  const animationFrameRef = useRef<number | null>(null);
+  const isScanningFrameRef = useRef(false);
   const scanLockRef = useRef(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // List available camera devices on active with strict back/environment preference
+  // List available camera devices
   useEffect(() => {
-    if (cameraActive) {
-      Html5Qrcode.getCameras()
+    if (cameraActive && navigator.mediaDevices?.enumerateDevices) {
+      navigator.mediaDevices.enumerateDevices()
         .then((devices) => {
-          if (devices && devices.length > 0) {
-            setCameras(devices);
-            // Strictly default to environment / back / rear camera
-            const backCam = devices.find((d) => {
+          const videoDevices = devices.filter((d) => d.kind === 'videoinput');
+          setCameras(videoDevices);
+          if (!selectedCameraId && videoDevices.length > 0) {
+            const backCam = videoDevices.find((d) => {
               const label = (d.label || '').toLowerCase();
               return (
                 label.includes('back') ||
@@ -139,23 +146,15 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
               );
             });
             if (backCam) {
-              setSelectedCameraId(backCam.id);
-            } else if (devices.length > 1) {
-              // On many phones the last device in list is the rear main camera
-              setSelectedCameraId(devices[devices.length - 1].id);
-            } else {
-              setSelectedCameraId(devices[0].id);
+              setSelectedCameraId(backCam.deviceId);
             }
           }
         })
         .catch((err) => {
           console.warn('Failed to retrieve list of camera devices:', err);
         });
-    } else {
-      setCameras([]);
-      setSelectedCameraId('');
     }
-  }, [cameraActive]);
+  }, [cameraActive, selectedCameraId]);
 
   const [lastScannedItem, setLastScannedItem] = useState<{
     item: StockItem;
@@ -217,200 +216,8 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
     latestScanContext.current = { activeBranch, onScanBarcode, selectedLocation };
   }, [activeBranch, onScanBarcode, selectedLocation]);
 
-  // HTML5 Barcode/QR Code Camera scanner implementation with robust multi-fallback & iOS Safari unlocking
-  useEffect(() => {
-    let observer: MutationObserver | null = null;
-    let unlockInterval: NodeJS.Timeout | null = null;
-
-    // Helper to enforce playsinline, muted, and autoplay on all video elements inside the camera viewport
-    const unlockVideoPlayback = () => {
-      const container = document.getElementById("camera-reader-viewport");
-      if (!container) return;
-      const videoEls = container.querySelectorAll("video");
-      videoEls.forEach((video) => {
-        video.setAttribute("playsinline", "true");
-        video.setAttribute("webkit-playsinline", "true");
-        video.setAttribute("muted", "true");
-        video.setAttribute("autoplay", "true");
-        video.muted = true;
-        video.playsInline = true;
-        video.autoplay = true;
-        if (video.paused) {
-          video.play().catch(() => {
-            // Ignore autoplay promise rejections
-          });
-        }
-      });
-    };
-
-    if (cameraActive) {
-      setCameraError(null);
-      setTorchEnabled(false);
-
-      // Start mutation observer on camera-reader-viewport to immediately catch injected <video> elements
-      const targetNode = document.getElementById("camera-reader-viewport");
-      if (targetNode) {
-        observer = new MutationObserver(() => {
-          unlockVideoPlayback();
-        });
-        observer.observe(targetNode, { childList: true, subtree: true });
-      }
-
-      // Also set interval to check and unlock video periodically during startup
-      unlockInterval = setInterval(unlockVideoPlayback, 300);
-
-      const timer = setTimeout(() => {
-        try {
-          const html5QrCode = new Html5Qrcode("camera-reader-viewport", {
-            verbose: false,
-            formatsToSupport: [
-              Html5QrcodeSupportedFormats.QR_CODE,
-              Html5QrcodeSupportedFormats.CODE_128,
-              Html5QrcodeSupportedFormats.EAN_13,
-              Html5QrcodeSupportedFormats.CODE_39,
-              Html5QrcodeSupportedFormats.EAN_8,
-              Html5QrcodeSupportedFormats.UPC_A,
-              Html5QrcodeSupportedFormats.UPC_E,
-              Html5QrcodeSupportedFormats.CODABAR,
-              Html5QrcodeSupportedFormats.ITF,
-              Html5QrcodeSupportedFormats.DATA_MATRIX,
-            ],
-            experimentalFeatures: {
-              useBarCodeDetectorIfSupported: true,
-            },
-          });
-          scannerRef.current = html5QrCode;
-
-          const scanConfig = {
-            fps: 25, // Fast frame rate for rapid barcode detection
-            qrbox: (viewWidth: number, viewHeight: number) => {
-              const boxWidth = Math.min(Math.floor(viewWidth * 0.9), 380);
-              const boxHeight = Math.min(Math.floor(viewHeight * 0.65), 240);
-              return { width: boxWidth, height: boxHeight };
-            },
-            aspectRatio: 1.333333,
-            disableFlip: false,
-          };
-
-          const launchScanner = async () => {
-            // Step 1: Force exact back camera (Primary target for high-precision mobile scanning)
-            const level1Constraints: any = selectedCameraId
-              ? {
-                  deviceId: { exact: selectedCameraId },
-                  width: { ideal: 1280, min: 640 },
-                  height: { ideal: 720, min: 480 },
-                  advanced: [{ focusMode: "continuous" } as any],
-                }
-              : {
-                  facingMode: { exact: "environment" },
-                  width: { ideal: 1280, min: 640 },
-                  height: { ideal: 720, min: 480 },
-                  advanced: [{ focusMode: "continuous" } as any],
-                };
-
-            try {
-              await html5QrCode.start(
-                level1Constraints,
-                scanConfig,
-                (decodedText) => handleBarcodeScanned(decodedText),
-                () => {}
-              );
-              unlockVideoPlayback();
-            } catch (err1) {
-              console.warn("Level 1 (exact environment) failed, falling back to Level 2 (facingMode environment):", err1);
-              try {
-                // Step 2: Fallback to ideal environment facingMode (Works on most Android/iOS without exact constraint support)
-                await html5QrCode.start(
-                  {
-                    facingMode: "environment",
-                    width: { ideal: 1280, min: 640 },
-                    height: { ideal: 720, min: 480 },
-                  },
-                  scanConfig,
-                  (decodedText) => handleBarcodeScanned(decodedText),
-                  () => {}
-                );
-                unlockVideoPlayback();
-              } catch (err2) {
-                console.warn("Level 2 failed, falling back to Level 3 (generic video stream):", err2);
-                try {
-                  // Step 3: Any available camera stream fallback
-                  const fallbackId = cameras.length > 0 ? cameras[0].id : undefined;
-                  await html5QrCode.start(
-                    fallbackId ? { deviceId: fallbackId } : { facingMode: "user" },
-                    { fps: 20, qrbox: { width: 300, height: 200 } },
-                    (decodedText) => handleBarcodeScanned(decodedText),
-                    () => {}
-                  );
-                  unlockVideoPlayback();
-                } catch (finalErr) {
-                  console.error("All camera start attempts failed:", finalErr);
-                  setCameraError("ไม่สามารถเปิดใช้งานกล้องวิดีโอบนอุปกรณ์นี้ได้ค่ะ (กรุณากด 'อนุญาตการใช้กล้อง' ในเบราว์เซอร์ หรือใช้วิธี 'ถ่ายรูปบาร์โค้ด' ด้านล่างแทนได้เลยค่ะ)");
-                  setCameraActive(false);
-                }
-              }
-            }
-          };
-
-          launchScanner();
-        } catch (e) {
-          console.error("Scanner init error", e);
-          setCameraError("เกิดข้อผิดพลาดในการเปิดระบบสแกนเนอร์");
-          setCameraActive(false);
-        }
-      }, 350);
-
-      return () => {
-        clearTimeout(timer);
-        if (unlockInterval) clearInterval(unlockInterval);
-        if (observer) observer.disconnect();
-        if (scannerRef.current) {
-          if (scannerRef.current.isScanning) {
-            scannerRef.current.stop().catch(err => console.error("Scanner stop error", err));
-          }
-          scannerRef.current = null;
-        }
-      };
-    }
-  }, [cameraActive, selectedCameraId]);
-
-  // Handle manual photo upload or snapshot scan
-  const handleImageFileSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-
-    setCameraError(null);
-    const tempScanner = new Html5Qrcode("camera-reader-viewport-temp", {
-      verbose: false,
-      formatsToSupport: [
-        Html5QrcodeSupportedFormats.QR_CODE,
-        Html5QrcodeSupportedFormats.CODE_128,
-        Html5QrcodeSupportedFormats.EAN_13,
-        Html5QrcodeSupportedFormats.CODE_39,
-        Html5QrcodeSupportedFormats.EAN_8,
-        Html5QrcodeSupportedFormats.UPC_A,
-        Html5QrcodeSupportedFormats.UPC_E,
-        Html5QrcodeSupportedFormats.CODABAR,
-        Html5QrcodeSupportedFormats.ITF,
-        Html5QrcodeSupportedFormats.DATA_MATRIX,
-      ],
-    });
-    
-    // Read and scan file
-    tempScanner.scanFile(file, true)
-      .then((decodedText) => {
-        handleBarcodeScanned(decodedText);
-        tempScanner.clear();
-      })
-      .catch((err) => {
-        console.error("File barcode scanning failed", err);
-        setCameraError("❌ ไม่พบข้อมูลบาร์โค้ดหรือ QR Code ในรูปภาพที่เลือกค่ะ กรุณาจัดกึ่งกลางภาพและถ่ายรูปให้ชัดเจนขึ้น แล้วลองใหม่อีกครั้งนะคะ");
-        tempScanner.clear();
-      });
-  };
-
   // Continuous Scan Workflow: Auto-Switch Box vs Scan SKU + 1 without closing camera
-  const handleBarcodeScanned = (code: string) => {
+  const handleBarcodeScanned = useCallback((code: string) => {
     if (scanLockRef.current) return;
     
     const query = code.trim();
@@ -418,7 +225,7 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
     
     if (!query || !currBranch) return;
 
-    // Fast throttle (800ms) to allow rapid continuous scanning without duplicate frame bounces
+    // Fast throttle (850ms) to allow rapid continuous scanning without duplicate frame bounces
     scanLockRef.current = true;
     setTimeout(() => {
       scanLockRef.current = false;
@@ -490,6 +297,7 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
       }
 
       setLastScannedItem({ item: scanned, timestamp: now });
+
       setScanHistory((prev) => [
         {
           sku: scanned.sku,
@@ -528,6 +336,293 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
       if (navigator.vibrate) navigator.vibrate([200]);
       alert(`ไม่พบสินค้าด้วยรหัสสแกน "${query}" ในระบบสาขา ${currBranch.name}`);
     }
+  }, [availableLocations, soundEnabled]);
+
+  // Robust Direct Camera Stream & Decoding Engine
+  useEffect(() => {
+    let isActive = true;
+    let stream: MediaStream | null = null;
+
+    if (!cameraActive) {
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+      }
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+      return;
+    }
+
+    setCameraError(null);
+    setTorchEnabled(false);
+
+    // Frame scanning loop
+    const processFrame = async () => {
+      if (!isActive || !cameraActive) return;
+
+      const video = videoRef.current;
+      if (video && video.readyState >= 2 && !video.paused && !video.ended && !isScanningFrameRef.current) {
+        isScanningFrameRef.current = true;
+        let foundCode: string | null = null;
+
+        try {
+          // 1. Try Native BarcodeDetector (Modern Android Chrome & iOS 17+ Safari)
+          if ('BarcodeDetector' in window) {
+            try {
+              if (!barcodeDetectorRef.current) {
+                barcodeDetectorRef.current = new (window as any).BarcodeDetector({
+                  formats: [
+                    'qr_code',
+                    'code_128',
+                    'ean_13',
+                    'code_39',
+                    'ean_8',
+                    'upc_a',
+                    'upc_e',
+                    'codabar',
+                    'itf',
+                    'data_matrix',
+                  ],
+                });
+              }
+              const barcodes = await barcodeDetectorRef.current.detect(video);
+              if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+                foundCode = barcodes[0].rawValue;
+              }
+            } catch (e) {
+              // Fallback to canvas
+            }
+          }
+
+          // 2. Canvas extraction fallback for jsQR (QR Code) and ZXing (1D Barcodes)
+          if (!foundCode && video.videoWidth > 0 && video.videoHeight > 0) {
+            let canvas = canvasRef.current;
+            if (!canvas) {
+              canvas = document.createElement('canvas');
+              canvasRef.current = canvas;
+            }
+            const ctx = canvas.getContext('2d', { willReadFrequently: true });
+            if (ctx) {
+              // Scale down slightly for ultra-fast 60fps frame processing
+              const targetW = Math.min(video.videoWidth, 800);
+              const targetH = Math.min(video.videoHeight, 600);
+              if (canvas.width !== targetW || canvas.height !== targetH) {
+                canvas.width = targetW;
+                canvas.height = targetH;
+              }
+              ctx.drawImage(video, 0, 0, targetW, targetH);
+
+              // 2.1 Try jsQR on canvas
+              try {
+                const imgData = ctx.getImageData(0, 0, targetW, targetH);
+                const qrResult = jsQR(imgData.data, imgData.width, imgData.height, {
+                  inversionAttempts: 'dontInvert',
+                });
+                if (qrResult && qrResult.data) {
+                  foundCode = qrResult.data;
+                }
+              } catch (e) {
+                // ignore
+              }
+
+              // 2.2 Try ZXing for 1D Barcodes if jsQR did not match
+              if (!foundCode) {
+                try {
+                  const zxResult = zxingReaderRef.current.decodeFromCanvas(canvas);
+                  if (zxResult && zxResult.getText()) {
+                    foundCode = zxResult.getText();
+                  }
+                } catch (e) {
+                  // Not found in this frame - expected
+                }
+              }
+            }
+          }
+
+          if (foundCode && isActive) {
+            handleBarcodeScanned(foundCode);
+          }
+        } catch (err) {
+          console.warn('Frame scan error:', err);
+        } finally {
+          isScanningFrameRef.current = false;
+        }
+      }
+
+      if (isActive && cameraActive) {
+        animationFrameRef.current = requestAnimationFrame(processFrame);
+      }
+    };
+
+    // Camera Stream Acquisition with multi-fallback (FacingMode environment -> generic video)
+    const initCamera = async () => {
+      try {
+        // Step 1: Request environment back camera without 'exact' to prevent OverconstrainedError
+        const primaryConstraints: MediaStreamConstraints = {
+          video: selectedCameraId
+            ? { deviceId: { ideal: selectedCameraId } }
+            : {
+                facingMode: 'environment', // NO exact constraint
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+              },
+          audio: false,
+        };
+
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(primaryConstraints);
+        } catch (err1) {
+          console.warn('Environment facingMode failed, falling back to basic { video: true }:', err1);
+          // Step 2: Fallback to basic { video: true }
+          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        }
+
+        if (!isActive) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+
+        mediaStreamRef.current = stream;
+
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.setAttribute('playsinline', 'true');
+          videoRef.current.setAttribute('webkit-playsinline', 'true');
+          videoRef.current.muted = true;
+          videoRef.current.autoplay = true;
+
+          try {
+            await videoRef.current.play();
+          } catch (playErr) {
+            console.warn('Video play auto-call:', playErr);
+          }
+        }
+
+        // Start frame scan loop
+        animationFrameRef.current = requestAnimationFrame(processFrame);
+      } catch (finalErr) {
+        console.error('All camera initialization attempts failed:', finalErr);
+        if (isActive) {
+          setCameraError(
+            'ไม่สามารถเปิดกล้องได้ค่ะ (กรุณากดอนุญาตการเข้าถึงกล้องในเบราว์เซอร์ หรือใช้วิธี "ถ่ายรูปบาร์โค้ด" ด้านล่างแทนได้เลยนะคะ)'
+          );
+          setCameraActive(false);
+        }
+      }
+    };
+
+    initCamera();
+
+    return () => {
+      isActive = false;
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+        animationFrameRef.current = null;
+      }
+      if (stream) {
+        stream.getTracks().forEach((track) => track.stop());
+      }
+      if (mediaStreamRef.current) {
+        mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+        mediaStreamRef.current = null;
+      }
+    };
+  }, [cameraActive, selectedCameraId, handleBarcodeScanned]);
+
+  // Torch Toggle Handler
+  const handleToggleTorch = async () => {
+    if (!mediaStreamRef.current) return;
+    const track = mediaStreamRef.current.getVideoTracks()[0];
+    if (!track) return;
+
+    const nextTorch = !torchEnabled;
+    try {
+      await (track as any).applyConstraints({
+        advanced: [{ torch: nextTorch }],
+      });
+      setTorchEnabled(nextTorch);
+    } catch (err) {
+      console.warn('Torch constraint not supported on this device/browser:', err);
+      alert('อุปกรณ์นี้ไม่รองรับการเปิดไฟฉายผ่านเบราว์เซอร์');
+    }
+  };
+
+  // Handle manual photo upload or snapshot scan
+  const handleImageFileSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setCameraError(null);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = async () => {
+        let decoded: string | null = null;
+
+        // Check native BarcodeDetector
+        if ('BarcodeDetector' in window) {
+          try {
+            const detector = new (window as any).BarcodeDetector({
+              formats: [
+                'qr_code',
+                'code_128',
+                'ean_13',
+                'code_39',
+                'ean_8',
+                'upc_a',
+                'upc_e',
+                'codabar',
+                'itf',
+                'data_matrix',
+              ],
+            });
+            const res = await detector.detect(img);
+            if (res && res.length > 0 && res[0].rawValue) {
+              decoded = res[0].rawValue;
+            }
+          } catch {}
+        }
+
+        // Check canvas with jsQR and ZXing
+        if (!decoded) {
+          const canvas = document.createElement('canvas');
+          canvas.width = img.naturalWidth || img.width;
+          canvas.height = img.naturalHeight || img.height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(img, 0, 0);
+            try {
+              const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+              const qr = jsQR(imgData.data, imgData.width, imgData.height);
+              if (qr && qr.data) {
+                decoded = qr.data;
+              }
+            } catch {}
+
+            if (!decoded) {
+              try {
+                const zx = zxingReaderRef.current.decodeFromCanvas(canvas);
+                if (zx && zx.getText()) {
+                  decoded = zx.getText();
+                }
+              } catch {}
+            }
+          }
+        }
+
+        if (decoded) {
+          handleBarcodeScanned(decoded);
+        } else {
+          setCameraError(
+            '❌ ไม่พบข้อมูลบาร์โค้ดหรือ QR Code ในรูปภาพที่เลือกค่ะ กรุณาถ่ายภาพให้ชัดเจนและลองใหม่อีกครั้งนะคะ'
+          );
+        }
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.readAsDataURL(file);
   };
 
   const handleManualScanSubmit = (e?: React.FormEvent) => {
@@ -794,47 +889,63 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
           {cameraActive && (
             <div className="p-4 bg-slate-950 text-center relative group">
               <div 
-                id="camera-reader-viewport" 
-                className="mx-auto w-full max-w-md overflow-hidden rounded-xl bg-slate-900 border border-slate-800 aspect-video flex items-center justify-center relative shadow-inner"
-              />
-              <button
-                onClick={() => {
-                  const newTorch = !torchEnabled;
-                  if (scannerRef.current) {
-                    scannerRef.current.applyVideoConstraints({
-                      advanced: [{ torch: newTorch } as any]
-                    }).then(() => {
-                      setTorchEnabled(newTorch);
-                    }).catch((err) => {
-                      console.warn("Torch toggle failed or not supported by device:", err);
-                      alert('อุปกรณ์นี้ไม่รองรับการเปิดไฟฉายขณะสแกน');
-                    });
-                  }
-                }}
-                className={`absolute bottom-12 right-8 p-2.5 rounded-full border shadow-md transition z-10 ${
-                  torchEnabled 
-                    ? 'bg-amber-400 text-amber-900 border-amber-500' 
-                    : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700'
-                }`}
-                title="เปิด/ปิด ไฟฉาย"
+                className="mx-auto w-full max-w-md overflow-hidden rounded-xl bg-slate-900 border-2 border-slate-700 aspect-video flex items-center justify-center relative shadow-inner"
               >
-                {torchEnabled ? <ZapOff className="w-5 h-5" /> : <Zap className="w-5 h-5" />}
-              </button>
-              <p className="text-[11px] text-slate-400 mt-3 font-medium">
-                หันกล้องไปที่ **QR Code ลังสินค้า** หรือ **บาร์โค้ด** บนฉลากสินค้าเพื่อทำการสแกนอัตโนมัติ
+                <video
+                  ref={videoRef}
+                  playsInline={true}
+                  muted={true}
+                  autoPlay={true}
+                  className="w-full h-full object-cover"
+                />
+                
+                {/* Visual Scanning Reticle & Animated Laser Line */}
+                <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                  <div className="w-[82%] h-[68%] border-2 border-emerald-400/80 rounded-xl relative shadow-[0_0_20px_rgba(52,211,153,0.25)] overflow-hidden">
+                    {/* Laser line animation */}
+                    <div className="absolute left-0 right-0 h-1 bg-gradient-to-r from-transparent via-emerald-400 to-transparent shadow-[0_0_10px_#34d399] animate-[bounce_2s_infinite]" />
+                    {/* Corner brackets */}
+                    <div className="absolute top-0 left-0 w-3.5 h-3.5 border-t-2 border-l-2 border-emerald-400" />
+                    <div className="absolute top-0 right-0 w-3.5 h-3.5 border-t-2 border-r-2 border-emerald-400" />
+                    <div className="absolute bottom-0 left-0 w-3.5 h-3.5 border-b-2 border-l-2 border-emerald-400" />
+                    <div className="absolute bottom-0 right-0 w-3.5 h-3.5 border-b-2 border-r-2 border-emerald-400" />
+                  </div>
+                </div>
+
+                {/* Torch toggle button */}
+                <button
+                  type="button"
+                  onClick={handleToggleTorch}
+                  className={`absolute bottom-3 right-3 p-2.5 rounded-full border shadow-md transition z-10 ${
+                    torchEnabled 
+                      ? 'bg-amber-400 text-amber-950 border-amber-500 shadow-amber-400/30' 
+                      : 'bg-slate-800/90 text-slate-200 border-slate-700 hover:bg-slate-700'
+                  }`}
+                  title="เปิด/ปิด ไฟฉาย"
+                >
+                  {torchEnabled ? <ZapOff className="w-5 h-5" /> : <Zap className="w-5 h-5" />}
+                </button>
+              </div>
+
+              {cameraError && (
+                <div className="mt-3 p-3 bg-rose-950/80 border border-rose-800 rounded-xl text-rose-300 text-xs font-semibold text-left flex items-start gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+                  <span>{cameraError}</span>
+                </div>
+              )}
+
+              <p className="text-[11px] text-slate-300 mt-3 font-medium">
+                หันกล้องไปที่ <strong>QR Code ลังสินค้า</strong> หรือ <strong>บาร์โค้ด SKU</strong> เพื่อสแกนตรวจนับต่อเนื่อง
               </p>
             </div>
           )}
-
-          {/* HIDDEN TEMP VIEWPORT FOR INSTANT FILE SCANNING */}
-          <div id="camera-reader-viewport-temp" className="hidden" />
 
           {/* BACKUP PHOTO UPLOADER & CAMERA SELECTOR */}
           <div className="p-3.5 bg-slate-50 flex flex-col items-center justify-center gap-3 border-t border-slate-100">
             {cameraActive && cameras.length > 1 && (
               <div className="w-full max-w-xs text-left">
                 <span className="block text-[10px] font-black text-slate-400 uppercase mb-1 tracking-wider">
-                  กล้องที่ตรวจพบ ({cameras.length}):
+                  เลือกเลนส์กล้อง ({cameras.length}):
                 </span>
                 <select
                   value={selectedCameraId}
@@ -842,7 +953,7 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
                   className="w-full text-xs font-bold bg-white text-slate-700 border border-slate-200 rounded-xl px-3 py-2 outline-hidden focus:ring-2 focus:ring-blue-100"
                 >
                   {cameras.map((cam, i) => (
-                    <option key={cam.id} value={cam.id}>
+                    <option key={cam.deviceId || `cam-${i}`} value={cam.deviceId}>
                       {cam.label || `เลนส์กล้องที่ ${i + 1}`}
                     </option>
                   ))}
