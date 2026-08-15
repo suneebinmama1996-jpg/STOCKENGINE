@@ -184,33 +184,65 @@ export function generateEngineJsonOutput(branches: Branch[]): EngineJsonOutput {
 /**
  * Web Audio API audio beep feedback for PDA Scanner
  */
-export function playScanBeep(type: 'success' | 'error' | 'over' = 'success') {
+export function playScanBeep(type: 'success' | 'item' | 'match' | 'box' | 'error' | 'over' = 'success') {
   try {
     const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
     if (!AudioCtx) return;
     const ctx = new AudioCtx();
+    
+    // Ensure suspended audio contexts resume on user action
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
+
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
 
     osc.connect(gain);
     gain.connect(ctx.destination);
 
-    if (type === 'success') {
-      osc.frequency.setValueAtTime(1800, ctx.currentTime);
-      gain.gain.setValueAtTime(0.15, ctx.currentTime);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.08);
-    } else if (type === 'over') {
-      osc.frequency.setValueAtTime(2400, ctx.currentTime);
-      gain.gain.setValueAtTime(0.15, ctx.currentTime);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.12);
-    } else {
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(400, ctx.currentTime);
+    if (type === 'match' || type === 'success') {
+      // High bright double chirp for MATCH completion
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(1760, ctx.currentTime); // A6
+      osc.frequency.setValueAtTime(2349.32, ctx.currentTime + 0.06); // D7
       gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.15);
       osc.start();
-      osc.stop(ctx.currentTime + 0.25);
+      osc.stop(ctx.currentTime + 0.15);
+    } else if (type === 'item') {
+      // Crisp laser chirp for single item scan +1
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(2093, ctx.currentTime); // C7
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.09);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.09);
+    } else if (type === 'box') {
+      // Pleasant elevator chime for box / location scan
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(1046.5, ctx.currentTime); // C6
+      osc.frequency.setValueAtTime(1318.51, ctx.currentTime + 0.08); // E6
+      gain.gain.setValueAtTime(0.22, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+    } else if (type === 'over') {
+      // High alert note
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(2600, ctx.currentTime);
+      gain.gain.setValueAtTime(0.18, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.14);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.14);
+    } else {
+      // Low alert buzz for error / not found
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(320, ctx.currentTime);
+      gain.gain.setValueAtTime(0.22, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.22);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.22);
     }
   } catch {
     // ignore audio errors if blocked

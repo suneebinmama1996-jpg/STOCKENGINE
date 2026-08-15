@@ -103,6 +103,8 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [selectedLocation, setSelectedLocation] = useState<string>('ALL');
   const [locationNotice, setLocationNotice] = useState<string | null>(null);
+  const [justScannedSku, setJustScannedSku] = useState<string | null>(null);
+  const justScannedTimerRef = useRef<NodeJS.Timeout | null>(null);
   
   // Camera scanning states
   const [cameraActive, setCameraActive] = useState(false);
@@ -215,7 +217,7 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
     latestScanContext.current = { activeBranch, onScanBarcode, selectedLocation };
   }, [activeBranch, onScanBarcode, selectedLocation]);
 
-  // HTML5 Barcode/QR Code Camera scanner implementation with resilient fallbacks
+  // HTML5 Barcode/QR Code Camera scanner implementation supporting all barcode formats
   useEffect(() => {
     if (cameraActive) {
       setCameraError(null);
@@ -227,11 +229,14 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
             formatsToSupport: [
               Html5QrcodeSupportedFormats.QR_CODE,
               Html5QrcodeSupportedFormats.CODE_128,
-              Html5QrcodeSupportedFormats.CODE_39,
               Html5QrcodeSupportedFormats.EAN_13,
+              Html5QrcodeSupportedFormats.CODE_39,
               Html5QrcodeSupportedFormats.EAN_8,
               Html5QrcodeSupportedFormats.UPC_A,
               Html5QrcodeSupportedFormats.UPC_E,
+              Html5QrcodeSupportedFormats.CODABAR,
+              Html5QrcodeSupportedFormats.ITF,
+              Html5QrcodeSupportedFormats.DATA_MATRIX,
             ],
             experimentalFeatures: {
               useBarCodeDetectorIfSupported: true,
@@ -239,25 +244,35 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
           });
           scannerRef.current = html5QrCode;
           
-          // Primary constraint: Back camera preferred
+          // Enhanced video constraints: HD resolution & continuous focus
           const primaryConstraints: any = selectedCameraId
-            ? { deviceId: { exact: selectedCameraId } }
-            : { facingMode: "environment" };
+            ? {
+                deviceId: { exact: selectedCameraId },
+                width: { ideal: 1280, min: 640 },
+                height: { ideal: 720, min: 480 },
+                advanced: [{ focusMode: "continuous" } as any],
+              }
+            : {
+                facingMode: "environment",
+                width: { ideal: 1280, min: 640 },
+                height: { ideal: 720, min: 480 },
+                advanced: [{ focusMode: "continuous" } as any],
+              };
 
           const scanConfig = {
-            fps: 24, // High frame rate for rapid barcode detection
+            fps: 25, // Fast frame rate for rapid barcode detection
             qrbox: (viewWidth: number, viewHeight: number) => {
-              const minDim = Math.min(viewWidth, viewHeight);
-              const boxWidth = Math.min(Math.floor(viewWidth * 0.88), 360);
-              const boxHeight = Math.min(Math.floor(minDim * 0.65), 240);
+              const boxWidth = Math.min(Math.floor(viewWidth * 0.9), 380);
+              const boxHeight = Math.min(Math.floor(viewHeight * 0.65), 240);
               return { width: boxWidth, height: boxHeight };
             },
             aspectRatio: 1.333333,
+            disableFlip: false,
           };
 
           const launchScanner = async () => {
             try {
-              // Attempt 1: Direct back camera with chosen id or environment facingMode
+              // Attempt 1: Direct back camera with HD constraints
               await html5QrCode.start(
                 primaryConstraints,
                 scanConfig,
@@ -270,7 +285,7 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
                 // Attempt 2: Flexible environment constraint without exact deviceId
                 await html5QrCode.start(
                   { facingMode: "environment" },
-                  { fps: 20, qrbox: { width: 280, height: 180 } },
+                  { fps: 20, qrbox: { width: 300, height: 200 } },
                   (decodedText) => handleBarcodeScanned(decodedText),
                   () => {}
                 );
@@ -320,7 +335,21 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
     if (!file) return;
 
     setCameraError(null);
-    const tempScanner = new Html5Qrcode("camera-reader-viewport-temp", { verbose: false });
+    const tempScanner = new Html5Qrcode("camera-reader-viewport-temp", {
+      verbose: false,
+      formatsToSupport: [
+        Html5QrcodeSupportedFormats.QR_CODE,
+        Html5QrcodeSupportedFormats.CODE_128,
+        Html5QrcodeSupportedFormats.EAN_13,
+        Html5QrcodeSupportedFormats.CODE_39,
+        Html5QrcodeSupportedFormats.EAN_8,
+        Html5QrcodeSupportedFormats.UPC_A,
+        Html5QrcodeSupportedFormats.UPC_E,
+        Html5QrcodeSupportedFormats.CODABAR,
+        Html5QrcodeSupportedFormats.ITF,
+        Html5QrcodeSupportedFormats.DATA_MATRIX,
+      ],
+    });
     
     // Read and scan file
     tempScanner.scanFile(file, true)
@@ -335,7 +364,7 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
       });
   };
 
-  // Process Scanned Input (Smart Box/Location QR Code vs Item Barcode check)
+  // Continuous Scan Workflow: Auto-Switch Box vs Scan SKU + 1 without closing camera
   const handleBarcodeScanned = (code: string) => {
     if (scanLockRef.current) return;
     
@@ -344,54 +373,75 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
     
     if (!query || !currBranch) return;
 
-    // Throttle scan to prevent duplicate entries
+    // Fast throttle (800ms) to allow rapid continuous scanning without duplicate frame bounces
     scanLockRef.current = true;
     setTimeout(() => {
       scanLockRef.current = false;
-    }, 1500);
+    }, 850);
     
-    if (navigator.vibrate) {
-      navigator.vibrate(100);
-    }
-
-    // Check if the scanned code matches a product barcode or SKU first
+    // 1. Check if query matches a known location/box in the branch
+    const isExactLocationMatch = availableLocations.some((loc) => (loc || '').toLowerCase() === query.toLowerCase());
+    
+    // Check if query matches a product barcode or SKU in current branch
     const isProductMatch = currBranch.items.some(
       (item) => (item.barcode || '').toLowerCase() === query.toLowerCase() || (item.sku || '').toLowerCase() === query.toLowerCase()
     );
 
-    // If it is NOT a product, or if it matches the name of an existing location, OR starts with location-like prefixes:
-    const isBoxCode = !isProductMatch || availableLocations.some((loc) => (loc || '').toLowerCase() === query.toLowerCase());
-    const matchedPrefix = 
+    const isBoxCodePattern = 
       query.toUpperCase().startsWith('BOX-') || 
       query.toUpperCase().startsWith('BIN-') || 
       query.toUpperCase().startsWith('LOC-') || 
-      query.startsWith('ลัง-') || 
-      query.startsWith('ชั้น-') || 
+      query.toUpperCase().startsWith('SHT-') || 
+      query.toUpperCase().startsWith('DM-') || 
+      query.startsWith('ลัง') || 
+      query.startsWith('ชั้น') || 
       query.toUpperCase().startsWith('SHELF-');
 
-    if (isBoxCode && (matchedPrefix || query.length < 8 || !isProductMatch)) {
-      // Treat as Box QR / Location Code!
+    // If it's an explicit location match or box pattern (and not solely a product inside the current box)
+    if (isExactLocationMatch || (isBoxCodePattern && !isProductMatch)) {
+      // Step 1 / Switch Box: Set active box & filter list immediately
       setSelectedLocation(query);
-      if (soundEnabled) playScanBeep('success');
+      if (soundEnabled) playScanBeep('box');
+      if (navigator.vibrate) navigator.vibrate([50, 50, 100]);
       
       const itemsInLoc = currBranch.items.filter(
         (i) => (i.location || '').toLowerCase() === query.toLowerCase()
       );
       
-      setLocationNotice(`📦 สแกน QR ลังสินค้าสำเร็จ: "${query}"! แสดงสินค้าที่อยู่ในลังนี้ทันที (${itemsInLoc.length} รายการ)`);
-      setTimeout(() => setLocationNotice(null), 5000);
+      setLocationNotice(`📦 สแกน QR ลัง: "${query}" สำเร็จ! สแกนบาร์โค้ด SKU ในลังนี้ต่อได้ทันที (${itemsInLoc.length} รายการ)`);
+      setTimeout(() => setLocationNotice(null), 4000);
       return;
     }
 
-    // Otherwise, scan as Barcode or SKU inside the active box context
+    // Step 2 (Scan SKU): Scan barcode or SKU within the active box context
     const scanned = currOnScanBarcode(currBranch.id, query, currSelectedLocation);
     const now = new Date().toLocaleTimeString('th-TH');
 
     if (scanned) {
+      // Visual feedback: green flashing card
+      setJustScannedSku(scanned.sku);
+      if (justScannedTimerRef.current) clearTimeout(justScannedTimerRef.current);
+      justScannedTimerRef.current = setTimeout(() => {
+        setJustScannedSku(null);
+      }, 2000);
+
+      // Audio & Haptic feedback
       if (soundEnabled) {
-        if (scanned.status === 'MATCH') playScanBeep('success');
-        else if (scanned.status === 'OVER') playScanBeep('over');
-        else playScanBeep('error');
+        if (scanned.status === 'MATCH') {
+          playScanBeep('match');
+        } else if (scanned.status === 'OVER') {
+          playScanBeep('over');
+        } else {
+          playScanBeep('item');
+        }
+      }
+
+      if (navigator.vibrate) {
+        if (scanned.status === 'MATCH') {
+          navigator.vibrate([100, 50, 150]);
+        } else {
+          navigator.vibrate(80);
+        }
       }
 
       setLastScannedItem({ item: scanned, timestamp: now });
@@ -408,8 +458,29 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
         },
         ...prev.slice(0, 9),
       ]);
+
+      const statusMsg =
+        scanned.status === 'MATCH'
+          ? 'ครบถ้วน (MATCH 🟢)'
+          : scanned.status === 'OVER'
+          ? `เกิน +${scanned.variance} (OVER 🟡)`
+          : `ขาดอีก -${Math.abs(scanned.variance)} (SHORTAGE 🔴)`;
+
+      setLocationNotice(`✓ สแกน [${scanned.sku}]: +1 ชิ้น (นับแล้ว ${scanned.scannedQty}/${scanned.systemQty} ชิ้น) — ${statusMsg}`);
+      setTimeout(() => setLocationNotice(null), 3500);
+
+      // Auto scroll to scanned item smoothly
+      try {
+        const itemEl = document.getElementById(`mobile-item-${scanned.sku}`);
+        if (itemEl) {
+          itemEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      } catch (e) {
+        // ignore scroll error
+      }
     } else {
       if (soundEnabled) playScanBeep('error');
+      if (navigator.vibrate) navigator.vibrate([200]);
       alert(`ไม่พบสินค้าด้วยรหัสสแกน "${query}" ในระบบสาขา ${currBranch.name}`);
     }
   };
@@ -897,7 +968,27 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
                 const isShortage = item.scannedQty < item.systemQty;
                 const isOver = item.scannedQty > item.systemQty;
 
-                // Dynamic background and border styling based on audit status
+                // Robust SKU and Name determination
+                const displaySku =
+                  item.sku && String(item.sku).trim() !== ''
+                    ? String(item.sku).trim()
+                    : item.barcode && String(item.barcode).trim() !== ''
+                    ? String(item.barcode).trim()
+                    : item.name && String(item.name).trim() !== ''
+                    ? String(item.name).trim()
+                    : `SKU-${index + 1}`;
+
+                const displayName =
+                  item.name && String(item.name).trim() !== '' && String(item.name).trim() !== displaySku
+                    ? String(item.name).trim()
+                    : '';
+
+                const isJustScanned =
+                  justScannedSku === displaySku ||
+                  justScannedSku === item.sku ||
+                  (item.barcode && justScannedSku === item.barcode);
+
+                // Dynamic background and border styling based on audit status and live scan trigger
                 let rowCardClass = 'bg-white border-slate-200 text-slate-900 shadow-2xs hover:border-slate-300';
                 let badgeEl = (
                   <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
@@ -905,7 +996,16 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
                   </span>
                 );
 
-                if (isMatch) {
+                if (isJustScanned) {
+                  // Vibrant green flash effect when just scanned
+                  rowCardClass = 'bg-emerald-100 border-emerald-500 text-emerald-950 shadow-md ring-4 ring-emerald-400/80 scale-[1.01] transition-all duration-300';
+                  badgeEl = (
+                    <span className="text-[10px] font-black text-white bg-emerald-700 px-2 py-0.5 rounded flex items-center gap-1 shadow-xs animate-pulse">
+                      <Zap className="w-3.5 h-3.5 fill-current" />
+                      นับเพิ่มแล้ว!
+                    </span>
+                  );
+                } else if (isMatch) {
                   // Light green background highlight when MATCH
                   rowCardClass = 'bg-emerald-50/95 border-emerald-400 text-emerald-950 shadow-xs ring-1 ring-emerald-300/80';
                   badgeEl = (
@@ -931,21 +1031,6 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
                     </span>
                   );
                 }
-
-                // Robust SKU and Name determination
-                const displaySku =
-                  item.sku && String(item.sku).trim() !== ''
-                    ? String(item.sku).trim()
-                    : item.barcode && String(item.barcode).trim() !== ''
-                    ? String(item.barcode).trim()
-                    : item.name && String(item.name).trim() !== ''
-                    ? String(item.name).trim()
-                    : `SKU-${index + 1}`;
-
-                const displayName =
-                  item.name && String(item.name).trim() !== '' && String(item.name).trim() !== displaySku
-                    ? String(item.name).trim()
-                    : '';
 
                 return (
                   <div

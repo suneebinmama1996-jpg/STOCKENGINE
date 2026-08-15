@@ -552,37 +552,44 @@ export default function App() {
 
     let scannedResultItem: StockItem | null = null;
     const cleanQuery = barcodeOrSku.trim().toLowerCase();
-    let itemMatched = false;
+    
+    // 1. Locate matching item index (prioritize active targetLocation box first!)
+    let matchIndex = -1;
+    if (targetLocation && targetLocation !== 'ALL') {
+      matchIndex = branch.items.findIndex(
+        (item) =>
+          ((item.location || '').toLowerCase() === targetLocation.toLowerCase()) &&
+          (((item.barcode || '').toLowerCase() === cleanQuery) || ((item.sku || '').toLowerCase() === cleanQuery))
+      );
+    }
 
-    const updatedItems = branch.items.map((item) => {
-      if (
-        !itemMatched &&
-        ((item.barcode || '').toLowerCase() === cleanQuery || (item.sku || '').toLowerCase() === cleanQuery)
-      ) {
-        itemMatched = true;
-        const newQty = item.scannedQty + 1;
-        const { variance, status, color } = calculateItemVariance(item.systemQty, newQty);
-        
-        // If a specific box/location is active, assign it to the item!
-        const finalLocation = targetLocation && targetLocation !== 'ALL' ? targetLocation : item.location;
+    if (matchIndex === -1) {
+      matchIndex = branch.items.findIndex(
+        (item) =>
+          ((item.barcode || '').toLowerCase() === cleanQuery) || ((item.sku || '').toLowerCase() === cleanQuery)
+      );
+    }
 
-        const updated = {
-          ...item,
-          scannedQty: newQty,
-          variance,
-          status,
-          color,
-          location: finalLocation,
-          lastScannedAt: new Date().toISOString(),
-        };
-        scannedResultItem = updated;
-        return updated;
-      }
-      return item;
-    });
+    let updatedItems = [...branch.items];
 
-    // If barcode not found in branch, create a new item with 0 system qty (OVER item) placed in active box/location
-    if (!itemMatched) {
+    if (matchIndex !== -1) {
+      const targetItem = updatedItems[matchIndex];
+      const newQty = (targetItem.scannedQty || 0) + 1;
+      const { variance, status, color } = calculateItemVariance(targetItem.systemQty, newQty);
+      
+      const updated: StockItem = {
+        ...targetItem,
+        scannedQty: newQty,
+        variance,
+        status,
+        color,
+        lastScannedAt: new Date().toISOString(),
+      };
+      
+      scannedResultItem = updated;
+      updatedItems[matchIndex] = updated;
+    } else {
+      // Barcode not found in branch, create a new item with 0 system qty (OVER item) placed in active box/location
       const newSku = barcodeOrSku.trim().toUpperCase();
       const finalLocation = targetLocation && targetLocation !== 'ALL' ? targetLocation : 'BIN-NEW-01';
       const newItem: StockItem = {
