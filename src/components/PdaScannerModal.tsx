@@ -102,10 +102,19 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
 }) => {
   const [barcodeInput, setBarcodeInput] = useState('');
   const [soundEnabled, setSoundEnabled] = useState(true);
-  const [selectedLocation, setSelectedLocation] = useState<string>('ALL');
-  const [locationNotice, setLocationNotice] = useState<string | null>(null);
+  const [selectedLocation, setSelectedLocation] = useState<string>('');
+  const [locationNotice, setLocationNotice] = useState<{ message: string; type: 'success' | 'warning' | 'error' | 'box' } | null>(null);
   const [justScannedSku, setJustScannedSku] = useState<string | null>(null);
   const justScannedTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const locationNoticeTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  const showToastNotice = (message: string, type: 'success' | 'warning' | 'error' | 'box' = 'success', duration = 3500) => {
+    if (locationNoticeTimerRef.current) clearTimeout(locationNoticeTimerRef.current);
+    setLocationNotice({ message, type });
+    locationNoticeTimerRef.current = setTimeout(() => {
+      setLocationNotice(null);
+    }, duration);
+  };
   
   // Camera scanning states
   const [cameraActive, setCameraActive] = useState(false);
@@ -216,7 +225,7 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
     latestScanContext.current = { activeBranch, onScanBarcode, selectedLocation };
   }, [activeBranch, onScanBarcode, selectedLocation]);
 
-  // Continuous Scan Workflow: Auto-Switch Box vs Scan SKU + 1 without closing camera
+  // Continuous Scan Workflow: Auto-Switch Box vs Strict In-Box SKU Verification + 1
   const handleBarcodeScanned = useCallback((code: string) => {
     if (scanLockRef.current) return;
     
@@ -225,59 +234,192 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
     
     if (!query || !currBranch) return;
 
-    // Fast throttle (850ms) to allow rapid continuous scanning without duplicate frame bounces
+    // Fast throttle (800ms) to allow rapid continuous scanning without duplicate frame bounces
     scanLockRef.current = true;
     setTimeout(() => {
       scanLockRef.current = false;
-    }, 850);
+    }, 800);
     
     // 1. Check if query matches a known location/box in the branch
-    const isExactLocationMatch = availableLocations.some((loc) => (loc || '').toLowerCase() === query.toLowerCase());
-    
-    // Check if query matches a product barcode or SKU in current branch
-    const isProductMatch = currBranch.items.some(
-      (item) => (item.barcode || '').toLowerCase() === query.toLowerCase() || (item.sku || '').toLowerCase() === query.toLowerCase()
+    const matchingLocation = availableLocations.find(
+      (loc) => (loc || '').trim().toLowerCase() === query.toLowerCase()
     );
 
     const isBoxCodePattern = 
+      query.toUpperCase().startsWith('SD-') || 
       query.toUpperCase().startsWith('BOX-') || 
       query.toUpperCase().startsWith('BIN-') || 
       query.toUpperCase().startsWith('LOC-') || 
       query.toUpperCase().startsWith('SHT-') || 
       query.toUpperCase().startsWith('DM-') || 
+      query.toUpperCase().startsWith('SHELF-') || 
+      query.toUpperCase().startsWith('RACK-') || 
       query.startsWith('ลัง') || 
-      query.startsWith('ชั้น') || 
-      query.toUpperCase().startsWith('SHELF-');
+      query.startsWith('ชั้น');
 
-    // If it's an explicit location match or box pattern (and not solely a product inside the current box)
-    if (isExactLocationMatch || (isBoxCodePattern && !isProductMatch)) {
-      // Step 1 / Switch Box: Set active box & filter list immediately
-      setSelectedLocation(query);
+    const isProductMatchInBranch = currBranch.items.some(
+      (item) => (item.barcode || '').trim().toLowerCase() === query.toLowerCase() || (item.sku || '').trim().toLowerCase() === query.toLowerCase()
+    );
+
+    // Case 1: Scanned a BOX QR code
+    if (matchingLocation || (isBoxCodePattern && !isProductMatchInBranch)) {
+      const finalBoxId = matchingLocation || query;
+      setSelectedLocation(finalBoxId);
       if (soundEnabled) playScanBeep('box');
-      if (navigator.vibrate) navigator.vibrate([50, 50, 100]);
+      if (navigator.vibrate) navigator.vibrate([60, 60, 100]);
       
       const itemsInLoc = currBranch.items.filter(
-        (i) => (i.location || '').toLowerCase() === query.toLowerCase()
+        (i) => (i.location || '').trim().toLowerCase() === finalBoxId.toLowerCase()
       );
       
-      setLocationNotice(`📦 สแกน QR ลัง: "${query}" สำเร็จ! สแกนบาร์โค้ด SKU ในลังนี้ต่อได้ทันที (${itemsInLoc.length} รายการ)`);
-      setTimeout(() => setLocationNotice(null), 4000);
+      showToastNotice(
+        `📦 สแกน QR ลัง: "${finalBoxId}" สำเร็จ! พบ ${itemsInLoc.length} รายการ — สแกนบาร์โค้ด SKU ในลังนี้ต่อได้ทันที`,
+        'box',
+        4000
+      );
       return;
     }
 
-    // Step 2 (Scan SKU): Scan barcode or SKU within the active box context
+    // Case 2: No box selected yet -> Prompt worker to scan or select a box first
+    if (!currSelectedLocation || currSelectedLocation.trim() === '') {
+      const foundItem = currBranch.items.find(
+        (item) => (item.barcode || '').trim().toLowerCase() === query.toLowerCase() || (item.sku || '').trim().toLowerCase() === query.toLowerCase()
+      );
+
+      if (soundEnabled) playScanBeep('error');
+      if (navigator.vibrate) navigator.vibrate([150, 100, 150]);
+
+      if (foundItem) {
+        showToastNotice(
+          `⚠️ กรุณาสแกน QR Code ลังสินค้าก่อนสแกนนับ SKU ค่ะ (สินค้านี้ [${foundItem.sku}] อยู่ในลัง: "${foundItem.location || '-'}")`,
+          'warning',
+          4500
+        );
+      } else {
+        showToastNotice(
+          `⚠️ กรุณาสแกน QR Code ลังสินค้า (เช่น SD-1-40) หรือเลือกลังก่อนเริ่มนับสินค้าค่ะ`,
+          'warning',
+          4000
+        );
+      }
+      return;
+    }
+
+    // Case 3: In-Box Strict SKU Verification when a specific box is active
+    if (currSelectedLocation !== 'ALL') {
+      const itemInThisBox = currBranch.items.find(
+        (i) =>
+          (i.location || '').trim().toLowerCase() === currSelectedLocation.trim().toLowerCase() &&
+          ((i.barcode || '').trim().toLowerCase() === query.toLowerCase() ||
+           (i.sku || '').trim().toLowerCase() === query.toLowerCase())
+      );
+
+      // 3.1: SKU IS in this box -> Count +1
+      if (itemInThisBox) {
+        const scanned = currOnScanBarcode(currBranch.id, query, currSelectedLocation);
+        const now = new Date().toLocaleTimeString('th-TH');
+
+        if (scanned) {
+          setJustScannedSku(scanned.sku);
+          if (justScannedTimerRef.current) clearTimeout(justScannedTimerRef.current);
+          justScannedTimerRef.current = setTimeout(() => {
+            setJustScannedSku(null);
+          }, 2200);
+
+          // Audio feedback
+          if (soundEnabled) {
+            if (scanned.status === 'MATCH') {
+              playScanBeep('match');
+            } else if (scanned.status === 'OVER') {
+              playScanBeep('over');
+            } else {
+              playScanBeep('item');
+            }
+          }
+
+          if (navigator.vibrate) {
+            if (scanned.status === 'MATCH') {
+              navigator.vibrate([100, 50, 150]);
+            } else {
+              navigator.vibrate(80);
+            }
+          }
+
+          setLastScannedItem({ item: scanned, timestamp: now });
+          setScanHistory((prev) => [
+            {
+              sku: scanned.sku,
+              name: scanned.name,
+              barcode: scanned.barcode,
+              scannedQty: scanned.scannedQty,
+              systemQty: scanned.systemQty,
+              status: scanned.status,
+              time: now,
+              location: scanned.location,
+            },
+            ...prev.slice(0, 9),
+          ]);
+
+          const statusMsg =
+            scanned.status === 'MATCH'
+              ? 'ครบถ้วน (MATCH 🟢)'
+              : scanned.status === 'OVER'
+              ? `เกิน +${scanned.variance} (OVER 🟡)`
+              : `ขาดอีก -${Math.abs(scanned.variance)} (SHORTAGE 🔴)`;
+
+          showToastNotice(
+            `✓ สแกน [${scanned.sku}]: +1 ชิ้น (นับแล้ว ${scanned.scannedQty}/${scanned.systemQty} ชิ้น) — ${statusMsg}`,
+            'success',
+            3500
+          );
+
+          try {
+            const itemEl = document.getElementById(`mobile-item-${scanned.sku}`);
+            if (itemEl) {
+              itemEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            }
+          } catch (e) {}
+        }
+        return;
+      }
+
+      // 3.2: SKU is NOT in this box -> Show alert with sound & do not increment
+      const itemInOtherBox = currBranch.items.find(
+        (i) =>
+          (i.barcode || '').trim().toLowerCase() === query.toLowerCase() ||
+          (i.sku || '').trim().toLowerCase() === query.toLowerCase()
+      );
+
+      if (soundEnabled) playScanBeep('error');
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+
+      if (itemInOtherBox) {
+        showToastNotice(
+          `⚠️ สินค้า [${itemInOtherBox.sku}] ไม่อยู่ในลังนี้ (${currSelectedLocation}) — พบอยู่ที่ลัง: "${itemInOtherBox.location}"`,
+          'error',
+          5000
+        );
+      } else {
+        showToastNotice(
+          `⚠️ ไม่พบสินค้า [${query}] ในลัง "${currSelectedLocation}" และไม่พบในระบบสาขา ${currBranch.name}`,
+          'error',
+          4500
+        );
+      }
+      return;
+    }
+
+    // Case 4: SelectedLocation is 'ALL'
     const scanned = currOnScanBarcode(currBranch.id, query, currSelectedLocation);
     const now = new Date().toLocaleTimeString('th-TH');
 
     if (scanned) {
-      // Visual feedback: green flashing card
       setJustScannedSku(scanned.sku);
       if (justScannedTimerRef.current) clearTimeout(justScannedTimerRef.current);
       justScannedTimerRef.current = setTimeout(() => {
         setJustScannedSku(null);
       }, 2000);
 
-      // Audio & Haptic feedback
       if (soundEnabled) {
         if (scanned.status === 'MATCH') {
           playScanBeep('match');
@@ -288,16 +430,7 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
         }
       }
 
-      if (navigator.vibrate) {
-        if (scanned.status === 'MATCH') {
-          navigator.vibrate([100, 50, 150]);
-        } else {
-          navigator.vibrate(80);
-        }
-      }
-
       setLastScannedItem({ item: scanned, timestamp: now });
-
       setScanHistory((prev) => [
         {
           sku: scanned.sku,
@@ -312,29 +445,14 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
         ...prev.slice(0, 9),
       ]);
 
-      const statusMsg =
-        scanned.status === 'MATCH'
-          ? 'ครบถ้วน (MATCH 🟢)'
-          : scanned.status === 'OVER'
-          ? `เกิน +${scanned.variance} (OVER 🟡)`
-          : `ขาดอีก -${Math.abs(scanned.variance)} (SHORTAGE 🔴)`;
-
-      setLocationNotice(`✓ สแกน [${scanned.sku}]: +1 ชิ้น (นับแล้ว ${scanned.scannedQty}/${scanned.systemQty} ชิ้น) — ${statusMsg}`);
-      setTimeout(() => setLocationNotice(null), 3500);
-
-      // Auto scroll to scanned item smoothly
-      try {
-        const itemEl = document.getElementById(`mobile-item-${scanned.sku}`);
-        if (itemEl) {
-          itemEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-      } catch (e) {
-        // ignore scroll error
-      }
+      showToastNotice(
+        `✓ สแกน [${scanned.sku}]: +1 ชิ้น (นับแล้ว ${scanned.scannedQty}/${scanned.systemQty} ชิ้น)`,
+        'success',
+        3000
+      );
     } else {
       if (soundEnabled) playScanBeep('error');
-      if (navigator.vibrate) navigator.vibrate([200]);
-      alert(`ไม่พบสินค้าด้วยรหัสสแกน "${query}" ในระบบสาขา ${currBranch.name}`);
+      showToastNotice(`ไม่พบสินค้าด้วยรหัสสแกน "${query}" ในระบบสาขา ${currBranch.name}`, 'error', 4000);
     }
   }, [availableLocations, soundEnabled]);
 
@@ -656,10 +774,17 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
     }
   };
 
-  // Filter items in active branch by location & quick search query
+  // Filter items in active branch strictly by location & quick search query
+  const hasBoxSelected = Boolean(selectedLocation && selectedLocation.trim() !== '' && selectedLocation !== 'ALL');
+  const isViewingAll = selectedLocation === 'ALL';
+
   const filteredItemsToView = (activeBranch?.items || []).filter((item) => {
-    const matchesLoc = selectedLocation === 'ALL' || 
-      (item.location || '').toLowerCase() === selectedLocation.toLowerCase();
+    if (!hasBoxSelected && !isViewingAll) {
+      // Hide product list until a box is scanned or selected
+      return false;
+    }
+    const matchesLoc = isViewingAll || 
+      (item.location || '').trim().toLowerCase() === selectedLocation.trim().toLowerCase();
     const matchesSearch =
       !skuSearchQuery ||
       (item.sku || '').toLowerCase().includes(skuSearchQuery.toLowerCase()) ||
@@ -667,6 +792,14 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
       (item.name || '').toLowerCase().includes(skuSearchQuery.toLowerCase());
     return matchesLoc && matchesSearch;
   });
+
+  const totalItemsInThisBox = hasBoxSelected
+    ? (activeBranch?.items || []).filter((i) => (i.location || '').trim().toLowerCase() === selectedLocation.trim().toLowerCase()).length
+    : 0;
+
+  const matchedItemsInThisBox = hasBoxSelected
+    ? (activeBranch?.items || []).filter((i) => (i.location || '').trim().toLowerCase() === selectedLocation.trim().toLowerCase() && i.scannedQty === i.systemQty).length
+    : 0;
 
   // Calculate high-level summary of discrepancies to display dynamically in the header card
   const shortageItems = (activeBranch?.items || []).filter(item => item.status === 'SHORTAGE');
@@ -994,70 +1127,162 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
         {/* 3. ACTIVE BOX QR CODE INDICATOR & CONTROLS */}
         <div className="bg-white rounded-2xl p-4 border border-slate-100 shadow-sm space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-              <Box className="w-4 h-4 text-amber-500" />
-              <span>คลังบรรจุ / รหัสลังสินค้า (Box QR Code):</span>
+            <span className="text-xs font-black text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
+              <Box className="w-4.5 h-4.5 text-amber-500" />
+              <span>ตำแหน่งลังสินค้า (Box QR Location):</span>
             </span>
-            {selectedLocation !== 'ALL' && (
+            {hasBoxSelected && (
               <button
-                onClick={() => setSelectedLocation('ALL')}
+                type="button"
+                onClick={() => setSelectedLocation('')}
+                className="text-xs text-amber-600 hover:text-amber-700 font-black flex items-center gap-1 cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>เปลี่ยนลัง</span>
+              </button>
+            )}
+            {isViewingAll && (
+              <button
+                type="button"
+                onClick={() => setSelectedLocation('')}
                 className="text-xs text-blue-600 hover:underline font-extrabold"
               >
-                แสดงรายการทั้งหมด
+                กลับไปโหมดระบุลัง
               </button>
             )}
           </div>
 
-          {selectedLocation !== 'ALL' ? (
-            <div className="p-4 rounded-xl bg-amber-500 text-slate-950 border-2 border-amber-600 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm">
+          {hasBoxSelected ? (
+            <div className="p-4 rounded-2xl bg-gradient-to-r from-amber-500 to-amber-400 text-slate-950 border-2 border-amber-600 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-md">
               <div className="flex items-center gap-3 min-w-0">
-                <span className="text-3xl">📦</span>
+                <div className="w-12 h-12 rounded-xl bg-amber-400 border border-amber-300 flex items-center justify-center text-2xl shadow-inner shrink-0">
+                  📦
+                </div>
                 <div className="min-w-0">
-                  <p className="text-[10px] font-black uppercase tracking-wider text-amber-950/80">กล่อง / ลังที่กำลังตรวจนับ:</p>
-                  <p className="text-2xl font-black font-mono break-all text-slate-950 drop-shadow-2xs">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-amber-950/90 bg-amber-400/80 px-2 py-0.5 rounded">
+                      ลังที่กำลังตรวจนับ
+                    </span>
+                    <span className="text-xs font-bold text-amber-950">
+                      (พบ {totalItemsInThisBox} รายการ • ครบแล้ว {matchedItemsInThisBox}/{totalItemsInThisBox})
+                    </span>
+                  </div>
+                  <p className="text-2xl sm:text-3xl font-black font-mono break-all text-slate-950 drop-shadow-2xs mt-0.5">
                     {selectedLocation}
                   </p>
                 </div>
               </div>
               <button
-                onClick={() => setSelectedLocation('ALL')}
-                className="w-full sm:w-auto px-4 py-2 text-xs font-black bg-slate-950 text-white hover:bg-slate-800 rounded-lg shadow-md transition shrink-0 active:scale-95"
+                type="button"
+                onClick={() => {
+                  setSelectedLocation('');
+                  if (soundEnabled) playScanBeep('box');
+                  showToastNotice('📦 เคลียร์ลังเรียบร้อยแล้ว กรุณาสแกน QR ลังถัดไปค่ะ', 'box', 3000);
+                }}
+                className="w-full sm:w-auto px-4 py-2.5 text-xs font-black bg-slate-950 text-white hover:bg-slate-800 rounded-xl shadow-md transition shrink-0 active:scale-95 flex items-center justify-center gap-1.5 cursor-pointer border border-slate-700"
               >
-                ยิงลังอื่น / แสดงทั้งหมด
+                <RefreshCw className="w-4 h-4" />
+                <span>สแกนลังใหม่ / เลือกลังอื่น</span>
+              </button>
+            </div>
+          ) : isViewingAll ? (
+            <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-xl flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-xl">📋</span>
+                <div>
+                  <p className="text-xs font-black text-blue-900">กำลังแสดงสินค้าทั้งหมดในสาขา</p>
+                  <p className="text-[10px] text-blue-700">แนะนำให้สแกน QR ลังสินค้าเพื่อความแม่นยำในการนับทีละลัง</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedLocation('')}
+                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shrink-0"
+              >
+                สแกนตามลัง
               </button>
             </div>
           ) : (
-            <div className="bg-slate-50 p-4 rounded-xl text-center border border-slate-100">
-              <p className="text-xs text-slate-500 font-medium">สแกนรหัสคิวอาร์ลังสินค้าเพื่อค้นหาสินค้าบรรจุในลังทันที</p>
+            <div className="bg-amber-50/70 border-2 border-dashed border-amber-300 p-4 sm:p-5 rounded-2xl text-center space-y-3">
+              <div className="w-12 h-12 rounded-full bg-amber-100 text-amber-800 flex items-center justify-center mx-auto text-2xl shadow-inner">
+                📦
+              </div>
+              <div>
+                <p className="text-sm font-black text-amber-950">
+                  กรุณาสแกน QR Code ลังสินค้า (เช่น SD-1-40) เพื่อเริ่มตรวจนับ
+                </p>
+                <p className="text-xs text-amber-800/80 mt-1">
+                  เมื่อสแกนลังสำเร็จ ระบบจะกรองเฉพาะ SKU ที่บรรจุอยู่ในลังนั้นให้ทันที
+                </p>
+              </div>
               
               {/* Shortcut Bins list */}
               {availableLocations.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-slate-200">
-                  <p className="text-[10px] font-bold text-slate-400 text-left mb-2 uppercase tracking-wide">คลิกเพื่อสลับรหัสลังจำลอง:</p>
-                  <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto">
-                    {availableLocations.map((loc) => (
-                      <button
-                        key={loc}
-                        onClick={() => {
-                          setSelectedLocation(loc);
-                          if (soundEnabled) playScanBeep('success');
-                        }}
-                        className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-700 text-xs font-bold hover:border-slate-300 hover:bg-slate-50 transition flex items-center gap-1.5 shadow-2xs"
-                      >
-                        <span>📦 {loc}</span>
-                      </button>
-                    ))}
+                <div className="pt-3 border-t border-amber-200/80">
+                  <p className="text-[10px] font-black text-amber-900/70 text-left mb-2 uppercase tracking-wide">
+                    หรือแตะเลือกลังสินค้าด้านล่างนี้ได้โดยตรง:
+                  </p>
+                  <div className="flex flex-wrap gap-2 max-h-36 overflow-y-auto">
+                    {availableLocations.map((loc) => {
+                      const countInLoc = (activeBranch?.items || []).filter(i => (i.location || '').trim().toLowerCase() === loc.trim().toLowerCase()).length;
+                      return (
+                        <button
+                          key={loc}
+                          type="button"
+                          onClick={() => {
+                            setSelectedLocation(loc);
+                            if (soundEnabled) playScanBeep('box');
+                            showToastNotice(`📦 เลือกลัง "${loc}" สำเร็จ! (${countInLoc} รายการ)`, 'box', 3000);
+                          }}
+                          className="px-3 py-2 rounded-xl bg-white border border-amber-300 text-slate-800 text-xs font-black hover:border-amber-500 hover:bg-amber-100/60 transition flex items-center gap-1.5 shadow-xs active:scale-95 cursor-pointer"
+                        >
+                          <span className="text-base">📦</span>
+                          <span>{loc}</span>
+                          <span className="text-[10px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.2 rounded-full">
+                            {countInLoc}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
               )}
+
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={() => setSelectedLocation('ALL')}
+                  className="text-xs text-slate-500 hover:text-slate-700 underline font-semibold"
+                >
+                  หรือคลิกที่นี่เพื่อแสดงสินค้าทั้งหมดในสาขานี้โดยไม่จำกัดลัง
+                </button>
+              </div>
             </div>
           )}
         </div>
 
         {locationNotice && (
-          <div className="p-3.5 bg-emerald-50 border border-emerald-100 text-emerald-800 rounded-xl text-xs font-bold flex items-center gap-2.5 animate-bounce shadow-sm">
-            <CheckCircle2 className="w-4.5 h-4.5 text-emerald-500 shrink-0" />
-            <span>{locationNotice}</span>
+          <div
+            className={`p-3.5 rounded-2xl text-xs font-black flex items-start sm:items-center gap-2.5 shadow-md animate-bounce border-2 ${
+              locationNotice.type === 'error'
+                ? 'bg-rose-50 border-rose-400 text-rose-900 shadow-rose-100'
+                : locationNotice.type === 'warning'
+                ? 'bg-amber-50 border-amber-400 text-amber-950 shadow-amber-100'
+                : locationNotice.type === 'box'
+                ? 'bg-amber-100 border-amber-500 text-amber-950 shadow-amber-200'
+                : 'bg-emerald-50 border-emerald-400 text-emerald-950 shadow-emerald-100'
+            }`}
+          >
+            {locationNotice.type === 'error' ? (
+              <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5 sm:mt-0" />
+            ) : locationNotice.type === 'warning' ? (
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5 sm:mt-0" />
+            ) : locationNotice.type === 'box' ? (
+              <Box className="w-5 h-5 text-amber-700 shrink-0 mt-0.5 sm:mt-0" />
+            ) : (
+              <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5 sm:mt-0" />
+            )}
+            <span className="leading-snug flex-1">{locationNotice.message}</span>
           </div>
         )}
 
@@ -1090,33 +1315,66 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
           </form>
         </div>
 
-        {/* 5. LIVE PRODUCT LIST - PERFECT REPLICA WITH REAL-TIME COLOR CODED STATUS & BADGES */}
+        {/* 5. LIVE PRODUCT LIST - STRICT BOX FILTER WITH MATCH HIGHLIGHT */}
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
           <div className="p-4 bg-white border-b border-slate-100 flex flex-col sm:flex-row gap-2.5 justify-between sm:items-center">
-            <span className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center gap-1.5">
-              <PackageCheck className="w-4.5 h-4.5 text-emerald-500" />
-              <span>
-                {selectedLocation !== 'ALL' 
-                  ? `สินค้าในลัง "${selectedLocation}"` 
-                  : 'รายการสินค้าและสถานะนับสต็อก'} ({filteredItemsToView.length} รายการ)
-              </span>
-            </span>
+            <div className="flex items-center gap-2">
+              <PackageCheck className="w-5 h-5 text-emerald-500" />
+              <div>
+                <span className="text-xs font-black text-slate-800 uppercase tracking-wider block">
+                  {hasBoxSelected 
+                    ? `สินค้าในลัง "${selectedLocation}"` 
+                    : isViewingAll
+                    ? 'รายการสินค้าทั้งหมดในสาขา'
+                    : 'รายการสินค้าในลัง'} 
+                  ({filteredItemsToView.length} รายการ)
+                </span>
+                {hasBoxSelected && (
+                  <span className="text-[10px] text-slate-500 font-medium">
+                    นับเสร็จแล้ว {matchedItemsInThisBox}/{totalItemsInThisBox} รายการ
+                  </span>
+                )}
+              </div>
+            </div>
             
-            <input
-              type="text"
-              placeholder="🔍 ค้นหาสินค้าด่วน..."
-              value={skuSearchQuery}
-              onChange={(e) => setSkuSearchQuery(e.target.value)}
-              className="w-full sm:w-48 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-base md:text-xs font-semibold text-slate-700 focus:outline-none"
-            />
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                placeholder="🔍 ค้นหาสินค้าด่วน..."
+                value={skuSearchQuery}
+                onChange={(e) => setSkuSearchQuery(e.target.value)}
+                className="w-full sm:w-44 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-base md:text-xs font-semibold text-slate-700 focus:outline-none"
+              />
+              {hasBoxSelected && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedLocation('')}
+                  className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-black transition shrink-0 flex items-center gap-1 border border-slate-200 cursor-pointer"
+                  title="สลับไปนับลังอื่น"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                  <span>สลับลัง</span>
+                </button>
+              )}
+            </div>
           </div>
 
           {/* Minimal Mobile Product List - Clean SKU, 0/1 Count, Large Thumb +/- Buttons, and MATCH Highlight */}
           <div className="p-3 sm:p-4 space-y-2.5">
-            {filteredItemsToView.length === 0 ? (
+            {!hasBoxSelected && !isViewingAll ? (
+              <div className="p-10 text-center text-slate-500 bg-amber-50/40 rounded-xl border border-dashed border-amber-200 space-y-2">
+                <Box className="w-10 h-10 text-amber-400 mx-auto" />
+                <p className="text-xs font-black text-slate-800">
+                  กรุณาสแกน QR Code ลังสินค้า (เช่น SD-1-40) หรือเลือกลังด้านบน
+                </p>
+                <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                  ระบบจะเปิดตารางและแสดงเฉพาะรายการสินค้า SKU ที่อยู่ในลังนั้นทันทีค่ะ
+                </p>
+              </div>
+            ) : filteredItemsToView.length === 0 ? (
               <div className="p-12 text-center text-slate-400 text-xs bg-slate-50 rounded-xl border border-dashed border-slate-200">
                 <Box className="w-10 h-10 text-slate-300 mx-auto mb-2" />
-                <span className="font-bold">ไม่พบสินค้าในรหัสลังหรือการค้นหานี้</span>
+                <span className="font-bold">ไม่พบสินค้าในรหัสลังหรือคำค้นหานี้</span>
               </div>
             ) : (
               filteredItemsToView.map((item, index) => {
