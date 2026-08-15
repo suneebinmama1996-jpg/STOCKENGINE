@@ -11,8 +11,11 @@ import {
   Check,
   Download,
   Calendar,
+  Loader2,
+  Server,
 } from 'lucide-react';
 import { parseMasterFile, downloadSampleExcelTemplate } from '../utils/excelParser';
+import { ImportProgress } from '../utils/googleSheetsService';
 
 interface MasterDataUploadModalProps {
   branches: Branch[];
@@ -20,8 +23,10 @@ interface MasterDataUploadModalProps {
     branchIdOrNewName: string,
     items: Omit<StockItem, 'id'>[],
     isNewBranch?: boolean,
-    auditDate?: string
-  ) => void;
+    auditDate?: string,
+    scheduleDay?: 'THURSDAY' | 'FRIDAY' | 'OTHER',
+    onProgress?: (progress: ImportProgress) => void
+  ) => Promise<boolean | void> | void;
   onClose: () => void;
 }
 
@@ -40,6 +45,8 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
   const [parsedItems, setParsedItems] = useState<Omit<StockItem, 'id'>[]>([]);
   const [copiedSample, setCopiedSample] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<ImportProgress | null>(null);
   const [fileName, setFileName] = useState('');
 
   // Preset Date calculations
@@ -113,13 +120,19 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
         alert('รูปแบบ JSON ต้องเป็น Array ของรายการสินค้า');
         return;
       }
-      const items = rows.map((r, i) => ({
-        sku: String(r.sku || r.SKU || `SKU-${i + 1}`).trim(),
-        barcode: String(r.barcode || r.Barcode || r.sku || `BC-${i + 1}`).trim(),
-        name: String(r.name || r.Name || `Item ${i + 1}`).trim(),
+      const items = rows.map((r, i) => {
+        const rSku = r.sku || r.SKU || r.productcode || '';
+        const rBarcode = r.barcode || r.Barcode || r.BarCode || '';
+        const barcodeVal = String(rBarcode || rSku || `BC-${i + 1}`).trim();
+        const skuVal = String(rSku || rBarcode || `SKU-${i + 1}`).trim();
+        
+        return {
+        sku: skuVal,
+        barcode: barcodeVal,
+        name: String(r.name || r.Name || r.productName || `Item ${i + 1}`).trim(),
         location: String(r.location || r.Location || r.bin || 'A-01').trim(),
         category: String(r.category || r.Category || 'General').trim(),
-        systemQty: Number(r.systemQty ?? r.system_qty ?? r['จำนวนตามระบบ'] ?? 0),
+        systemQty: Number(r.systemQty ?? r.system_qty ?? r.qty ?? r.quantity ?? r['จำนวนตามระบบ'] ?? 0),
         scannedQty: Number(r.scannedQty ?? r.scanned_qty ?? r['จำนวนสแกนจริง'] ?? 0),
         variance: Number((r.scannedQty ?? 0) - (r.systemQty ?? 0)),
         status:
@@ -134,31 +147,59 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
             : (r.scannedQty ?? 0) < (r.systemQty ?? 0)
             ? ('RED' as const)
             : ('YELLOW' as const),
-      }));
+        };
+      });
       setParsedItems(items);
     } catch {
       alert('รูปแบบ JSON ไม่ถูกต้อง กรุณาตรวจสอบวงเล็บและเครื่องหมายคำพูด');
     }
   };
 
-  const handleConfirmImport = () => {
+  const handleConfirmImport = async () => {
     if (parsedItems.length === 0) {
       alert('ไม่พบรายการสินค้าที่พร้อมนำเข้า');
       return;
     }
 
-    const itemsWithDate = parsedItems.map((item) => ({
-      ...item,
-      auditDate: auditDate || new Date().toISOString().slice(0, 10),
-    }));
+    setSubmitting(true);
+    setUploadProgress({
+      current: 0,
+      total: parsedItems.length,
+      percent: 0,
+      chunkIndex: 0,
+      totalChunks: Math.ceil(parsedItems.length / 300) || 1,
+      statusText: `เตรียมส่งข้อมูล ${parsedItems.length.toLocaleString()} รายการ...`
+    });
 
-    if (targetBranchOption === 'NEW_BRANCH') {
-      onImportItemsToBranch(newBranchName, itemsWithDate, true, auditDate);
-    } else {
-      onImportItemsToBranch(targetBranchOption, itemsWithDate, false, auditDate);
+    try {
+      const itemsWithDate = parsedItems.map((item) => ({
+        ...item,
+        barcode: String(item.barcode || item.sku || '').trim(),
+        name: String(item.name || '').trim(),
+        systemQty: Number(item.systemQty || 0),
+        scannedQty: Number(item.scannedQty || 0),
+        auditDate: auditDate || new Date().toISOString().slice(0, 10),
+      }));
+
+      if (targetBranchOption === 'NEW_BRANCH') {
+        await onImportItemsToBranch(newBranchName, itemsWithDate, true, auditDate, undefined, (progress) => {
+          setUploadProgress(progress);
+        });
+      } else {
+        await onImportItemsToBranch(targetBranchOption, itemsWithDate, false, auditDate, undefined, (progress) => {
+          setUploadProgress(progress);
+        });
+      }
+
+      // Modal is only closed after all chunks successfully reach 100%
+      onClose();
+    } catch (err: any) {
+      console.error('Import confirmation error:', err);
+      alert(`นำเข้าสินค้าไม่สำเร็จ: ${err?.message || 'เกิดข้อผิดพลาดในการเชื่อมต่อ'}`);
+    } finally {
+      setSubmitting(false);
+      setUploadProgress(null);
     }
-
-    onClose();
   };
 
   const handleCopySample = () => {
@@ -179,14 +220,15 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
             <div>
               <h3 className="text-sm font-extrabold uppercase tracking-tight">นำเข้า Master Data สต็อก (Excel / JSON)</h3>
               <p className="text-[11px] text-slate-400">
-                รองรับคอลัมน์: รหัสสินค้า (SKU), ตำแหน่ง (Bin), หมวดหมู่, จำนวนตามระบบ (System Qty), จำนวนสแกนจริง (Scanned Qty)
+                รองรับไฟล์ใหญ่ไม่จำกัดจำนวนรายการ (Unlimited Chunked Processing ชุดละ 300 รายการ)
               </p>
             </div>
           </div>
 
           <button
             onClick={onClose}
-            className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition"
+            disabled={submitting}
+            className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded transition disabled:opacity-30 disabled:cursor-not-allowed"
           >
             <X className="w-4 h-4" />
           </button>
@@ -194,6 +236,40 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-3.5 sm:p-4 space-y-3.5 max-h-[80vh] overflow-y-auto">
+          {/* Live Progress Bar Card (shown when submitting/uploading chunks) */}
+          {submitting && (
+            <div className="p-3.5 bg-blue-50 border border-blue-200 rounded-lg space-y-2.5 shadow-sm animate-in fade-in duration-200">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-blue-900 text-xs flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+                  {uploadProgress?.statusText || 'กำลังบันทึกลง Google Sheets...'}
+                </span>
+                <span className="font-black text-blue-700 text-sm">
+                  {uploadProgress?.percent || 0}%
+                </span>
+              </div>
+
+              {/* Progress Track */}
+              <div className="w-full bg-blue-200/60 rounded-full h-3.5 overflow-hidden shadow-inner border border-blue-200 relative">
+                <div
+                  className="bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-500 h-full rounded-full transition-all duration-300 ease-out"
+                  style={{ width: `${Math.max(uploadProgress?.percent || 0, 4)}%` }}
+                />
+              </div>
+
+              <div className="flex flex-wrap items-center justify-between text-[11px] text-slate-600 gap-1 pt-0.5">
+                <span className="font-semibold text-slate-700 flex items-center gap-1">
+                  <Server className="w-3.5 h-3.5 text-indigo-600 inline" />
+                  {uploadProgress
+                    ? `ส่งชุดที่ ${uploadProgress.chunkIndex || 1} จากทั้งหมด ${uploadProgress.totalChunks} ชุด (ชุดละ 300 รายการ)`
+                    : 'กำลังประมวลผล...'}
+                </span>
+                <span className="font-medium text-amber-800 bg-amber-100/70 px-2 py-0.5 rounded border border-amber-200 text-[10px]">
+                  ⚠️ กรุณารอสักครู่ ห้ามปิดหน้าต่างนี้จนกว่าจะครบ 100%
+                </span>
+              </div>
+            </div>
+          )}
           {/* Target Branch & Audit Date Picker */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {/* Target Branch */}
@@ -430,18 +506,28 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
         <div className="bg-slate-100 px-4 py-2.5 border-t border-slate-200 flex items-center justify-between">
           <button
             onClick={onClose}
-            className="px-3.5 py-1.5 rounded bg-white border border-slate-300 text-slate-700 font-semibold text-xs hover:bg-slate-50 transition"
+            disabled={submitting}
+            className="px-3.5 py-1.5 rounded bg-white border border-slate-300 text-slate-700 font-semibold text-xs hover:bg-slate-50 transition disabled:opacity-40 disabled:cursor-not-allowed"
           >
             ยกเลิก
           </button>
 
           <button
-            disabled={parsedItems.length === 0}
+            disabled={parsedItems.length === 0 || submitting}
             onClick={handleConfirmImport}
-            className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold text-xs transition shadow-2xs"
+            className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold text-xs transition shadow-2xs cursor-pointer disabled:cursor-not-allowed"
           >
-            <CheckCircle2 className="w-3.5 h-3.5" />
-            <span>ยืนยันนำเข้าข้อมูล ({parsedItems.length} SKU)</span>
+            {submitting ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>กำลังบันทึกข้อมูล ({uploadProgress?.percent || 0}%)...</span>
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>ยืนยันนำเข้าข้อมูล ({parsedItems.length.toLocaleString()} รายการ)</span>
+              </>
+            )}
           </button>
         </div>
       </div>

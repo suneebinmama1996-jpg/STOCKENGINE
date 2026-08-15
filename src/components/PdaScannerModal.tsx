@@ -25,10 +25,12 @@ import {
   ArrowRight,
   ChevronRight,
   PackageCheck,
-  HelpCircle
+  HelpCircle,
+  Zap,
+  ZapOff
 } from 'lucide-react';
 import { playScanBeep } from '../utils/stockCalculations';
-import { Html5Qrcode } from 'html5-qrcode';
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
 interface PdaScannerModalProps {
   branches: Branch[];
@@ -107,6 +109,10 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [cameras, setCameras] = useState<any[]>([]);
   const [selectedCameraId, setSelectedCameraId] = useState<string>('');
+  const [torchEnabled, setTorchEnabled] = useState(false);
+  
+  const scannerRef = useRef<Html5Qrcode | null>(null);
+  const scanLockRef = useRef(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -191,63 +197,62 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
     new Set((activeBranch?.items || []).map((item) => item.location).filter(Boolean))
   ).sort() as string[];
 
+  const latestScanContext = useRef({ activeBranch, onScanBarcode, selectedLocation });
+  useEffect(() => {
+    latestScanContext.current = { activeBranch, onScanBarcode, selectedLocation };
+  }, [activeBranch, onScanBarcode, selectedLocation]);
+
   // HTML5 Barcode/QR Code Camera scanner implementation
   useEffect(() => {
-    let html5QrCode: Html5Qrcode | null = null;
-    
     if (cameraActive) {
       setCameraError(null);
+      setTorchEnabled(false);
       const timer = setTimeout(() => {
         try {
-          html5QrCode = new Html5Qrcode("camera-reader-viewport");
+          const html5QrCode = new Html5Qrcode("camera-reader-viewport", {
+            verbose: false,
+            formatsToSupport: [
+              Html5QrcodeSupportedFormats.QR_CODE,
+              Html5QrcodeSupportedFormats.CODE_128,
+              Html5QrcodeSupportedFormats.CODE_39,
+              Html5QrcodeSupportedFormats.EAN_13,
+              Html5QrcodeSupportedFormats.EAN_8,
+              Html5QrcodeSupportedFormats.UPC_A,
+              Html5QrcodeSupportedFormats.UPC_E,
+            ],
+            experimentalFeatures: {
+              useBarCodeDetectorIfSupported: true,
+            },
+          });
+          scannerRef.current = html5QrCode;
           
-          // Use selected camera device ID if provided, otherwise fallback to default environment
-          const startConfig = selectedCameraId 
-            ? { deviceId: { exact: selectedCameraId } }
-            : { facingMode: "environment" };
+          const videoConstraints: MediaTrackConstraints = selectedCameraId
+            ? { deviceId: { exact: selectedCameraId }, width: { ideal: 1280 }, height: { ideal: 720 }, advanced: [{ focusMode: 'continuous' } as any] }
+            : { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 }, advanced: [{ focusMode: 'continuous' } as any] };
+
+          const config = {
+            fps: 15,
+            qrbox: (width: number, height: number) => {
+              const minDim = Math.min(width, height);
+              return { width: Math.floor(minDim * 0.85), height: Math.floor(minDim * 0.55) };
+            },
+          };
 
           html5QrCode.start(
-            startConfig,
-            {
-              fps: 15,
-              qrbox: (width, height) => {
-                const minDim = Math.min(width, height);
-                // Box should be wide but not too tall for barcode scanning
-                return {
-                  width: Math.floor(minDim * 0.85),
-                  height: Math.floor(minDim * 0.55),
-                };
-              },
-            },
-            (decodedText) => {
-              handleBarcodeScanned(decodedText);
-            },
-            (errorMessage) => {
-              // silent ignore scanning frame failures
-            }
+            videoConstraints,
+            config,
+            (decodedText) => handleBarcodeScanned(decodedText),
+            () => {}
           ).catch((err) => {
             console.error("Camera start failed", err);
-            // If starting with selected camera ID fails, retry with default facingMode
             if (selectedCameraId) {
-              console.log("Retrying with default facingMode...");
-              html5QrCode?.start(
-                { facingMode: "environment" },
-                {
-                  fps: 15,
-                  qrbox: (width, height) => {
-                    const minDim = Math.min(width, height);
-                    return {
-                      width: Math.floor(minDim * 0.85),
-                      height: Math.floor(minDim * 0.55),
-                    };
-                  },
-                },
-                (decodedText) => {
-                  handleBarcodeScanned(decodedText);
-                },
-                (errorMessage) => {}
+              const retryConstraints: MediaTrackConstraints = { facingMode: "environment", width: { ideal: 1280 }, height: { ideal: 720 }, advanced: [{ focusMode: 'continuous' } as any] };
+              html5QrCode.start(
+                retryConstraints,
+                config,
+                (decodedText) => handleBarcodeScanned(decodedText),
+                () => {}
               ).catch((retryErr) => {
-                console.error("Default retry camera failed", retryErr);
                 setCameraError("ไม่สามารถเข้าถึงกล้องถ่ายภาพในอุปกรณ์นี้ได้ค่ะ (กรุณาอนุญาตสิทธิ์กล้องในบราวเซอร์ หรือลองใช้วิธี 'ถ่ายรูปบาร์โค้ด' ด้านล่างแทน)");
                 setCameraActive(false);
               });
@@ -265,14 +270,15 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
 
       return () => {
         clearTimeout(timer);
-        if (html5QrCode) {
-          if (html5QrCode.isScanning) {
-            html5QrCode.stop().catch(err => console.error("Scanner stop error", err));
+        if (scannerRef.current) {
+          if (scannerRef.current.isScanning) {
+            scannerRef.current.stop().catch(err => console.error("Scanner stop error", err));
           }
+          scannerRef.current = null;
         }
       };
     }
-  }, [cameraActive, selectedCameraId, activeBranchId]);
+  }, [cameraActive, selectedCameraId]);
 
   // Handle manual photo upload or snapshot scan
   const handleImageFileSelected = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -297,11 +303,25 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
 
   // Process Scanned Input (Smart Box/Location QR Code vs Item Barcode check)
   const handleBarcodeScanned = (code: string) => {
+    if (scanLockRef.current) return;
+    
     const query = code.trim();
-    if (!query || !activeBranch) return;
+    const { activeBranch: currBranch, onScanBarcode: currOnScanBarcode, selectedLocation: currSelectedLocation } = latestScanContext.current;
+    
+    if (!query || !currBranch) return;
+
+    // Throttle scan to prevent duplicate entries
+    scanLockRef.current = true;
+    setTimeout(() => {
+      scanLockRef.current = false;
+    }, 1500);
+    
+    if (navigator.vibrate) {
+      navigator.vibrate(100);
+    }
 
     // Check if the scanned code matches a product barcode or SKU first
-    const isProductMatch = activeBranch.items.some(
+    const isProductMatch = currBranch.items.some(
       (item) => (item.barcode || '').toLowerCase() === query.toLowerCase() || (item.sku || '').toLowerCase() === query.toLowerCase()
     );
 
@@ -320,7 +340,7 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
       setSelectedLocation(query);
       if (soundEnabled) playScanBeep('success');
       
-      const itemsInLoc = activeBranch.items.filter(
+      const itemsInLoc = currBranch.items.filter(
         (i) => (i.location || '').toLowerCase() === query.toLowerCase()
       );
       
@@ -330,7 +350,7 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
     }
 
     // Otherwise, scan as Barcode or SKU inside the active box context
-    const scanned = onScanBarcode(activeBranch.id, query, selectedLocation);
+    const scanned = currOnScanBarcode(currBranch.id, query, currSelectedLocation);
     const now = new Date().toLocaleTimeString('th-TH');
 
     if (scanned) {
@@ -356,7 +376,7 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
       ]);
     } else {
       if (soundEnabled) playScanBeep('error');
-      alert(`ไม่พบสินค้าด้วยรหัสสแกน "${query}" ในระบบสาขา ${activeBranch.name}`);
+      alert(`ไม่พบสินค้าด้วยรหัสสแกน "${query}" ในระบบสาขา ${currBranch.name}`);
     }
   };
 
@@ -622,11 +642,34 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
           </div>
 
           {cameraActive && (
-            <div className="p-4 bg-slate-950 text-center relative">
+            <div className="p-4 bg-slate-950 text-center relative group">
               <div 
                 id="camera-reader-viewport" 
                 className="mx-auto w-full max-w-md overflow-hidden rounded-xl bg-slate-900 border border-slate-800 aspect-video flex items-center justify-center relative shadow-inner"
               />
+              <button
+                onClick={() => {
+                  const newTorch = !torchEnabled;
+                  if (scannerRef.current) {
+                    scannerRef.current.applyVideoConstraints({
+                      advanced: [{ torch: newTorch } as any]
+                    }).then(() => {
+                      setTorchEnabled(newTorch);
+                    }).catch((err) => {
+                      console.warn("Torch toggle failed or not supported by device:", err);
+                      alert('อุปกรณ์นี้ไม่รองรับการเปิดไฟฉายขณะสแกน');
+                    });
+                  }
+                }}
+                className={`absolute bottom-12 right-8 p-2.5 rounded-full border shadow-md transition z-10 ${
+                  torchEnabled 
+                    ? 'bg-amber-400 text-amber-900 border-amber-500' 
+                    : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700'
+                }`}
+                title="เปิด/ปิด ไฟฉาย"
+              >
+                {torchEnabled ? <ZapOff className="w-5 h-5" /> : <Zap className="w-5 h-5" />}
+              </button>
               <p className="text-[11px] text-slate-400 mt-3 font-medium">
                 หันกล้องไปที่ **QR Code ลังสินค้า** หรือ **บาร์โค้ด** บนฉลากสินค้าเพื่อทำการสแกนอัตโนมัติ
               </p>

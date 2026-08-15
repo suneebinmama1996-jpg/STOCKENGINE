@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { StockItem } from '../types';
+import { StockItem, MonthlyAuditScorecard, MonthlyCategoryBreakdown, MonthlyPerformanceSummary } from '../types';
 import { calculateItemVariance } from './stockCalculations';
 
 export interface ImportedRow {
@@ -56,17 +56,13 @@ function getValueFromRow(row: Record<string, unknown>, possibleKeys: string[]): 
 function processRawRows(rows: ImportedRow[]): Omit<StockItem, 'id'>[] {
   return rows.map((row, index) => {
     const record = row as Record<string, unknown>;
-
-    const sku =
-      getValueFromRow(record, ['รหัสสินค้า', 'sku', 'productcode', 'barcode', 'บาร์โค้ด']) ||
-      `SKU-${index + 1001}`;
-
-    const barcode =
-      getValueFromRow(record, ['บาร์โค้ด', 'barcode', 'รหัสสินค้า', 'sku']) || sku;
-
-    const name =
-      getValueFromRow(record, ['ชื่อสินค้า', 'name', 'description', 'รายละเอียด']) ||
-      `สินค้า ${sku}`;
+    
+    const barcodeRaw = getValueFromRow(record, ['บาร์โค้ด', 'barcode', 'รหัสสินค้า', 'sku', 'productcode']);
+    const skuRaw = getValueFromRow(record, ['รหัสสินค้า', 'sku', 'productcode', 'barcode', 'บาร์โค้ด']);
+    const sku = skuRaw || barcodeRaw || `SKU-${index + 1001}`;
+    const barcode = barcodeRaw || sku;
+    
+    const name = getValueFromRow(record, ['ชื่อสินค้า', 'name', 'productname', 'description', 'รายละเอียด']) || `สินค้า ${sku}`;
 
     // Extract exact location / bin code from Excel file (e.g. SHT-1-1, DM-1-1, ตำแหน่งหยิบชั่วคราว)
     const location =
@@ -214,3 +210,91 @@ export function exportToExcel(items: StockItem[], filename = 'stock_counting_rep
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Stock Audit');
   XLSX.writeFile(workbook, filename);
 }
+
+/**
+ * Downloads full Monthly Audit & Cycle Count Performance Report as Excel spreadsheet with multiple sheets
+ */
+export function exportMonthlyPerformanceToExcel(
+  monthLabel: string,
+  scorecards: MonthlyAuditScorecard[],
+  categoryBreakdowns: MonthlyCategoryBreakdown[],
+  summary?: MonthlyPerformanceSummary
+) {
+  const sanitizedLabel = monthLabel.replace(/[\s/]/g, '_');
+  const filename = `รายงานผลการตรวจนับประจำเดือน_${sanitizedLabel}.xlsx`;
+
+  const workbook = XLSX.utils.book_new();
+
+  // Sheet 1: Executive Summary
+  if (summary) {
+    const summaryData = [
+      { 'หัวข้อสรุปภาพรวม': 'ประจำเดือน', 'ค่าสถิติ': summary.monthLabel },
+      { 'หัวข้อสรุปภาพรวม': 'จำนวนสาขาทั้งหมด', 'ค่าสถิติ': `${summary.totalBranches} สาขา` },
+      { 'หัวข้อสรุปภาพรวม': 'สาขาที่ตรวจนับในเดือนนี้', 'ค่าสถิติ': `${summary.activeBranches} สาขา` },
+      { 'หัวข้อสรุปภาพรวม': 'อัตราการส่งงานเฉลี่ย (Submission Rate)', 'ค่าสถิติ': `${summary.overallSubmissionRate}%` },
+      { 'หัวข้อสรุปภาพรวม': 'ความแม่นยำรวม (Overall Accuracy)', 'ค่าสถิติ': `${summary.overallAccuracyRate}%` },
+      { 'หัวข้อสรุปภาพรวม': 'สาขาเกรด A (>=95%)', 'ค่าสถิติ': `${summary.gradeACount} สาขา` },
+      { 'หัวข้อสรุปภาพรวม': 'สาขาเกรด B (85-94%)', 'ค่าสถิติ': `${summary.gradeBCount} สาขา` },
+      { 'หัวข้อสรุปภาพรวม': 'สาขาเกรด C (<85%)', 'ค่าสถิติ': `${summary.gradeCCount} สาขา` },
+      { 'หัวข้อสรุปภาพรวม': 'หมวดหมู่ที่ตรวจนับบ่อยที่สุด', 'ค่าสถิติ': summary.topAuditedCategory },
+      { 'หัวข้อสรุปภาพรวม': 'หมวดหมู่ที่มีสต็อกขาดสูงสุด', 'ค่าสถิติ': summary.highestShortageCategory },
+      { 'หัวข้อสรุปภาพรวม': 'หมวดหมู่ที่มีสต็อกเกินสูงสุด', 'ค่าสถิติ': summary.highestOverCategory },
+      { 'หัวข้อสรุปภาพรวม': 'จำนวนสินค้าระบบทั้งหมด', 'ค่าสถิติ': `${summary.totalSystemUnits.toLocaleString()} ชิ้น` },
+      { 'หัวข้อสรุปภาพรวม': 'จำนวนสินค้าสแกนจริงทั้งหมด', 'ค่าสถิติ': `${summary.totalScannedUnits.toLocaleString()} ชิ้น` },
+      { 'หัวข้อสรุปภาพรวม': 'ยอดสต็อกขาดรวม (Shortage Units)', 'ค่าสถิติ': `${summary.totalShortageUnits.toLocaleString()} ชิ้น` },
+      { 'หัวข้อสรุปภาพรวม': 'ยอดสต็อกเกินรวม (Over Units)', 'ค่าสถิติ': `${summary.totalOverUnits.toLocaleString()} ชิ้น` },
+    ];
+    const wsSummary = XLSX.utils.json_to_sheet(summaryData);
+    XLSX.utils.book_append_sheet(workbook, wsSummary, 'ภาพรวมผู้บริหาร (Overview)');
+  }
+
+  // Sheet 2: Branch Scorecard
+  const scorecardData = scorecards.map((s, idx) => ({
+    'ลำดับ': idx + 1,
+    'รหัสสาขา': s.branchCode,
+    'ชื่อสาขา': s.branchName,
+    'ภูมิภาค': s.region,
+    'ผู้ตรวจนับที่รับผิดชอบ': s.assignedAuditor,
+    'รอบที่ส่งจริง / รอบที่ต้องส่ง': `${s.submittedRounds} / ${s.requiredRounds} รอบ`,
+    'อัตราการส่งงาน (%)': `${s.submissionRate}%`,
+    'หมวดหมู่ที่ตรวจนับ': s.categoriesAudited.join(', ') || 'ทั่วไป',
+    'รายการสินค้าทั้งหมด (SKU)': s.totalItems,
+    'รายการตรงตามระบบ (MATCH)': s.matchCount,
+    'รายการขาด (SHORTAGE)': s.shortageCount,
+    'รายการเกิน (OVER)': s.overCount,
+    'จำนวนระบบรวม': s.totalSystemQty,
+    'จำนวนสแกนจริงรวม': s.totalScannedQty,
+    'ยอดสต็อกขาด (ชิ้น)': s.shortageQty,
+    'ยอดสต็อกเกิน (ชิ้น)': s.overQty,
+    'ผลต่างสุทธิ (Net Variance)': s.netVariance,
+    'คะแนนความแม่นยำ (%)': `${s.accuracyRate}%`,
+    'เกรดประเมิน (Grade)': s.grade,
+    'สถานะปัจจุบัน': s.currentStatus,
+    'วันที่ตรวจล่าสุด': s.lastAuditDate || '-',
+  }));
+  const wsScorecard = XLSX.utils.json_to_sheet(scorecardData);
+  XLSX.utils.book_append_sheet(workbook, wsScorecard, 'คะแนนรายสาขา (Scorecard)');
+
+  // Sheet 3: Category Breakdown
+  const categoryData = categoryBreakdowns.map((c, idx) => ({
+    'ลำดับ': idx + 1,
+    'หมวดหมู่สินค้า': c.category,
+    'จำนวนรายการสินค้า (SKU)': c.itemsCount,
+    'รายการตรงตามระบบ (MATCH)': c.matchCount,
+    'รายการสต็อกขาด (SHORTAGE)': c.shortageCount,
+    'รายการสต็อกเกิน (OVER)': c.overCount,
+    'จำนวนระบบ (System Units)': c.totalSystemQty,
+    'จำนวนสแกนจริง (Scanned Units)': c.totalScannedQty,
+    'ยอดขาดรวม (ชิ้น)': c.shortageQty,
+    'ยอดเกินรวม (ชิ้น)': c.overQty,
+    'ผลต่างสุทธิ': c.netVariance,
+    'ความแม่นยำ (%)': `${c.accuracyRate}%`,
+    'อัตราสต็อกขาด (%)': `${c.shortageRate}%`,
+    'อัตราสต็อกเกิน (%)': `${c.overRate}%`,
+  }));
+  const wsCategory = XLSX.utils.json_to_sheet(categoryData);
+  XLSX.utils.book_append_sheet(workbook, wsCategory, 'วิเคราะห์หมวดหมู่ (Category)');
+
+  XLSX.writeFile(workbook, filename);
+}
+

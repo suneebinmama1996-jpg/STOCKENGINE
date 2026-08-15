@@ -10,11 +10,12 @@ import {
   Building2,
   CheckCircle2,
   Plus,
+  Award,
 } from 'lucide-react';
 
 interface NavbarProps {
-  activeTab: 'dashboard' | 'reconciliation' | 'pda' | 'json';
-  setActiveTab: (tab: 'dashboard' | 'reconciliation' | 'pda' | 'json') => void;
+  activeTab: 'dashboard' | 'monthly' | 'reconciliation' | 'pda' | 'json';
+  setActiveTab: (tab: 'dashboard' | 'monthly' | 'reconciliation' | 'pda' | 'json') => void;
   onOpenUploadModal: () => void;
   onOpenBranchManager: () => void;
   onResetData: () => void;
@@ -26,6 +27,7 @@ interface NavbarProps {
   setUserRole: (role: 'auditor' | 'branch') => void;
   isConnected?: boolean;
   isOffline?: boolean;
+  isSubmitting?: boolean;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -42,6 +44,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   setUserRole,
   isConnected = true,
   isOffline = false,
+  isSubmitting = false,
 }) => {
   return (
     <header className="bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-30 shadow-md">
@@ -62,8 +65,12 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </span>
                 {!isOffline && isConnected ? (
                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-600/30 text-emerald-300 border border-emerald-500/40" title="เชื่อมต่อและบันทึกฐานข้อมูลคลาวด์แบบเรียลไทม์เรียบร้อย">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                    คลาวด์ซิงค์ (Cloud Active)
+                    {isSubmitting ? (
+                      <span className="w-2.5 h-2.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin"></span>
+                    ) : (
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                    )}
+                    {isSubmitting ? 'กำลังซิงค์ (Syncing)' : 'คลาวด์ซิงค์ (Cloud Active)'}
                   </span>
                 ) : (
                   <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-amber-600/30 text-amber-300 border border-amber-500/40" title="กำลังทำงานในโหมดออฟไลน์และบันทึกข้อมูลในเครื่อง">
@@ -186,17 +193,32 @@ export const Navbar: React.FC<NavbarProps> = ({
         {/* Navigation Tabs */}
         <div className="flex overflow-x-auto space-x-1 border-t border-slate-800/80 pt-1 pb-1 scrollbar-none">
           {userRole !== 'branch' && (
-            <button
-              onClick={() => setActiveTab('dashboard')}
-              className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold rounded transition whitespace-nowrap ${
-                activeTab === 'dashboard'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
-              }`}
-            >
-              <LayoutDashboard className="w-3.5 h-3.5" />
-              <span>Audit Dashboard</span>
-            </button>
+            <>
+              <button
+                onClick={() => setActiveTab('dashboard')}
+                className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold rounded transition whitespace-nowrap ${
+                  activeTab === 'dashboard'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+              >
+                <LayoutDashboard className="w-3.5 h-3.5" />
+                <span>Audit Dashboard</span>
+              </button>
+
+              <button
+                onClick={() => setActiveTab('monthly')}
+                className={`flex items-center gap-2 px-3.5 py-1.5 text-xs font-semibold rounded transition whitespace-nowrap ${
+                  activeTab === 'monthly'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/60'
+                }`}
+                title="รายงานสรุปและคะแนนตรวจนับประจำเดือน (Monthly Audit Scorecard)"
+              >
+                <Award className="w-3.5 h-3.5 text-amber-300" />
+                <span>รายงานประจำเดือน (Monthly Scorecard)</span>
+              </button>
+            </>
           )}
 
           <button

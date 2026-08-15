@@ -10,13 +10,23 @@ import { PdaScannerModal } from './components/PdaScannerModal';
 import { MasterDataUploadModal } from './components/MasterDataUploadModal';
 import { BranchManagerModal } from './components/BranchManagerModal';
 import { JsonEngineOutputView } from './components/JsonEngineOutputView';
+import { MonthlyAuditPerformanceDashboard } from './components/MonthlyAuditPerformanceDashboard';
 import { QrCode } from 'lucide-react';
 import {
   subscribeToBranches,
   saveBranch,
+  importItemsToBranchInSheets,
   removeBranch,
   resetFirestoreDatabase,
+  pausePolling,
+  resumePolling,
+  getIsPollingPaused,
+  ImportProgress,
 } from './utils/googleSheetsService';
+import {
+  saveBranchesToIndexedDb,
+  loadBranchesFromIndexedDb,
+} from './utils/indexedDbStorage';
 import {
   safeParseItems,
   safeSetLocalStorage,
@@ -67,7 +77,7 @@ export default function App() {
     }
     return [];
   });
-  const [loading, setLoading] = useState<boolean>(true);
+  const [loading, setLoading] = useState<boolean>(true); // Will be set to false in useEffect finally block
   const [isOffline, setIsOffline] = useState<boolean>(false);
   const [isConnected, setIsConnected] = useState<boolean>(true);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -104,7 +114,7 @@ export default function App() {
     }
     return 'auditor';
   });
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'reconciliation' | 'pda' | 'json'>(() => {
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'monthly' | 'reconciliation' | 'pda' | 'json'>(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       if (params.has('branch') || params.has('branchId') || params.has('code')) {
@@ -130,6 +140,7 @@ export default function App() {
   const [branchManagerMode, setBranchManagerMode] = useState<'ADD' | 'LIST'>('LIST');
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
   const [refreshTrigger, setRefreshTrigger] = useState<number>(0);
+  const hasLoadedOnce = React.useRef(false);
 
   const handleRefresh = () => {
     setRefreshTrigger((prev) => prev + 1);
@@ -151,6 +162,14 @@ export default function App() {
           safeSetLocalStorage(key, cleaned);
         }
       });
+
+      // Hydrate from IndexedDB if branches are currently empty
+      loadBranchesFromIndexedDb().then((idbBranches) => {
+        if (idbBranches && idbBranches.length > 0) {
+          setBranches((prev) => (prev.length === 0 ? idbBranches : prev));
+          safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', idbBranches);
+        }
+      }).catch(err => console.warn('IDB startup load warning:', err));
     } catch (e) {
       console.warn('Cleanup mock cache error:', e);
     }
@@ -158,65 +177,93 @@ export default function App() {
 
   // 2. Real-time Google Sheets subscription with local data recovery (In Progress) and NO Mock Data fallback
   useEffect(() => {
+    let initialLoadTimeout: NodeJS.Timeout;
+    const isInitialLoad = !hasLoadedOnce.current && branches.length === 0;
+
     // Only show full-page loading spinner on initial cold start when branches is empty
-    if (branches.length === 0) {
+    if (isInitialLoad) {
       setLoading(true);
+      // Timeout ป้องกันค้าง
+      initialLoadTimeout = setTimeout(() => {
+        setLoading(false);
+      }, 10000);
     }
+
     const unsubscribe = subscribeToBranches(
       (updatedBranches) => {
-        // Successful fetch response (Response OK) -> Mark as online and connected immediately
-        const realBranches = normalizeBranchesList(
-          updatedBranches.filter((b) => !isMockBranch(b))
-        ).map((b) => ({
-          ...b,
-          items: safeParseItems(b.items),
-        }));
-        setBranches(realBranches);
-        setIsOffline(false);
-        setIsConnected(true);
-        setSyncError(null);
-        setDismissedSyncError(false);
-        setLoading(false);
-      },
-      (error) => {
-        // True network error occurred (e.g. offline, connection loss)
-        console.warn('Google Sheets subscription network error, entering offline mode:', error);
-        setIsOffline(true);
-        setIsConnected(false);
-
-        let localBranches: Branch[] = [];
         try {
-          const cached =
-            safeGetLocalStorage<Branch[]>('STOCK_ENGINE_REAL_DATA', []) ||
-            safeGetLocalStorage<Branch[]>('stock_branches_cache', []);
-          if (Array.isArray(cached) && cached.length > 0) {
-            // Only keep real user data
-            localBranches = normalizeBranchesList(
-              cached.filter((b) => b && !isMockBranch(b))
+          if (getIsPollingPaused()) {
+            console.log('[App] Polling update ignored due to active import/save transaction lock.');
+            return;
+          }
+          if (!updatedBranches || updatedBranches.length === 0) {
+            setBranches([]);
+          } else {
+            const realBranches = normalizeBranchesList(
+              updatedBranches.filter((b) => !isMockBranch(b))
             ).map((b) => ({
               ...b,
               items: safeParseItems(b.items),
             }));
+            setBranches(realBranches);
           }
-        } catch (e) {
-          console.warn('Error recovering data from localStorage safely:', e);
+          setIsOffline(false);
+          setIsConnected(true);
+          setSyncError(null);
+          setDismissedSyncError(false);
+        } finally {
+          hasLoadedOnce.current = true;
+          setLoading(false);
+          if (initialLoadTimeout) clearTimeout(initialLoadTimeout);
         }
+      },
+      (error) => {
+        try {
+          // True network error occurred (e.g. offline, connection loss)
+          console.warn('Google Sheets subscription network error, entering offline mode:', error);
+          setIsOffline(true);
+          setIsConnected(false);
 
-        setBranches(localBranches);
-        
-        if (localBranches.length > 0) {
-          setSyncError('⚠️ ดึงข้อมูลจริงล่าสุดที่สาขากำลังนับอยู่ (In Progress Data Recovery) ขึ้นมาสำเร็จในโหมดออฟไลน์ เนื่องจากขณะนี้ระบบเชื่อมต่อ Google Sheets ขัดข้อง ระบบจะบันทึกการทำงานของท่านในเครื่องนี้อย่างปลอดภัย และออโต้ซิงค์กลับเมื่อกลับมาเชื่อมต่อได้ค่ะ');
-        } else {
-          setSyncError('⚠️ ระบบไม่สามารถเชื่อมต่อ Google Sheets ได้ชั่วคราว (Network Error) และไม่พบข้อมูลการตรวจนับจริงค้างอยู่ในเครื่องนี้');
+          let localBranches: Branch[] = [];
+          try {
+            const cached =
+              safeGetLocalStorage<Branch[]>('STOCK_ENGINE_REAL_DATA', []) ||
+              safeGetLocalStorage<Branch[]>('stock_branches_cache', []);
+            if (Array.isArray(cached) && cached.length > 0) {
+              // Only keep real user data
+              localBranches = normalizeBranchesList(
+                cached.filter((b) => b && !isMockBranch(b))
+              ).map((b) => ({
+                ...b,
+                items: safeParseItems(b.items),
+              }));
+            }
+          } catch (e) {
+            console.warn('Error recovering data from localStorage safely:', e);
+          }
+
+          setBranches(localBranches);
+          
+          if (localBranches.length > 0) {
+            setSyncError('⚠️ ดึงข้อมูลจริงล่าสุดที่สาขากำลังนับอยู่ (In Progress Data Recovery) ขึ้นมาสำเร็จในโหมดออฟไลน์ เนื่องจากขณะนี้ระบบเชื่อมต่อ Google Sheets ขัดข้อง ระบบจะบันทึกการทำงานของท่านในเครื่องนี้อย่างปลอดภัย และออโต้ซิงค์กลับเมื่อกลับมาเชื่อมต่อได้ค่ะ');
+          } else {
+            setSyncError('⚠️ ระบบไม่สามารถเชื่อมต่อ Google Sheets ได้ชั่วคราว (Network Error) และไม่พบข้อมูลการตรวจนับจริงค้างอยู่ในเครื่องนี้');
+          }
+        } finally {
+          hasLoadedOnce.current = true;
+          setLoading(false);
+          if (initialLoadTimeout) clearTimeout(initialLoadTimeout);
         }
-        setLoading(false);
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      if (initialLoadTimeout) clearTimeout(initialLoadTimeout);
+    };
   }, [refreshTrigger]);
 
-  // 3. Auto-sync/Save branches state to localStorage cache (Strictly real data only, auto-saves real-time on any state change)
+  // 3. Auto-sync/Save branches state to localStorage cache and IndexedDB
   useEffect(() => {
     try {
       const realBranches = branches
@@ -226,6 +273,9 @@ export default function App() {
           items: safeParseItems(b.items)
         }));
       safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', realBranches);
+      if (realBranches.length > 0) {
+        saveBranchesToIndexedDb(realBranches).catch((e) => console.warn('IndexedDB auto-sync warning:', e));
+      }
     } catch (e) {
       console.warn('Failed to update STOCK_ENGINE_REAL_DATA cache safely:', e);
     }
@@ -282,10 +332,12 @@ export default function App() {
 
   // 4. Automatic background synchronization to cloud (LocalStorage -> Google Sheets) when online
   useEffect(() => {
-    if (loading || syncError || branches.length === 0) return;
+    if (loading || syncError || branches.length === 0 || isSubmitting || getIsPollingPaused()) return;
 
     const syncOfflineChangesToCloud = async () => {
       try {
+        if (getIsPollingPaused()) return;
+
         const cached = localStorage.getItem('STOCK_ENGINE_REAL_DATA');
         if (!cached) return;
 
@@ -304,7 +356,7 @@ export default function App() {
             JSON.stringify(cloudB.items) !== JSON.stringify(localB.items) ||
             cloudB.auditStatus !== localB.auditStatus;
 
-          if (needsSync) {
+          if (needsSync && !getIsPollingPaused()) {
             console.log(`[Auto-Sync] Syncing branch "${localB.name}" offline updates back to Google Sheets...`);
             await saveBranch(localB);
           }
@@ -315,7 +367,7 @@ export default function App() {
     };
 
     syncOfflineChangesToCloud();
-  }, [loading, syncError]);
+  }, [loading, syncError, isSubmitting]);
 
   // Add new branch to Google Sheets
   const handleAddBranch = async (data: {
@@ -370,9 +422,15 @@ export default function App() {
       auditStatus: data.auditStatus || target.auditStatus || 'NOT_STARTED',
     });
 
+    // Optimistic UI Update: อัปเดต State หน้าจอทันที
+    setBranches((prev) => prev.map((b) => (b.id === branchId ? updated : b)));
+    // ปิด Modal ทันที
+    setIsBranchManagerOpen(false);
+
     setIsSubmitting(true);
     try {
-      await saveBranch(updated);
+      // ส่ง id และ code อ้างอิงตัวเดิมไปพร้อมกับ payload
+      await saveBranch(updated, target.id, target.code);
       handleRefresh();
     } catch (e) {
       alert('เกิดข้อผิดพลาดในการแก้ไขข้อมูลสาขาลง Google Sheets');
@@ -615,19 +673,34 @@ export default function App() {
     }
   };
 
-  // Import Master Items to Branch or Create Branch in Firestore
+  // Import Master Items to Branch or Create Branch in Google Sheets
   const handleImportItemsToBranch = async (
     branchIdOrNewName: string,
     importedItems: Omit<StockItem, 'id'>[],
     isNewBranch?: boolean,
     auditDate?: string,
-    scheduleDay?: 'THURSDAY' | 'FRIDAY' | 'OTHER'
+    scheduleDay?: 'THURSDAY' | 'FRIDAY' | 'OTHER',
+    onProgress?: (progress: ImportProgress) => void
   ) => {
     setIsSubmitting(true);
+    // Pause auto-refresh polling immediately to prevent background fetch from overwriting data
+    pausePolling(120000);
     const effectiveAuditDate = auditDate || new Date().toISOString().slice(0, 10);
     try {
       if (isNewBranch) {
         const newCode = `BR-00${branches.length + 1}`;
+        const formattedItems = processItems(
+          importedItems.map((item, idx) => ({
+            ...item,
+            barcode: String(item.barcode || item.sku || `BC-${idx + 1}`).trim(),
+            name: String(item.name || `สินค้า ${item.sku || idx + 1}`).trim(),
+            systemQty: Number(item.systemQty ?? 0),
+            scannedQty: Number(item.scannedQty ?? 0),
+            auditDate: effectiveAuditDate,
+            id: `item-${Date.now()}-${idx}`,
+          }))
+        );
+
         const newBranch: Branch = normalizeBranchData({
           id: newCode,
           code: newCode,
@@ -637,66 +710,66 @@ export default function App() {
           auditScheduleDay: scheduleDay || 'OTHER',
           auditStatus: 'NOT_STARTED',
           assignedAuditor: 'เจ้าหน้าที่ Audit',
-          items: processItems(
-            importedItems.map((item, idx) => ({
-              ...item,
-              auditDate: effectiveAuditDate,
-              id: `item-${Date.now()}-${idx}`,
-            }))
-          ),
+          items: formattedItems,
         });
 
-        // Set state and save to LocalStorage immediately (optimistic & offline support)
-        setBranches((prev) => {
-          const next = [...prev, newBranch];
-          safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', next);
-          return next;
-        });
+        // 1. Local Cache First: Update UI State, LocalStorage, and IndexedDB immediately
+        const nextBranches = [...branches, newBranch];
+        setBranches(nextBranches);
+        safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', nextBranches);
+        saveBranchesToIndexedDb(nextBranches).catch((e) => console.warn('[App] IndexedDB save warning:', e));
         setSelectedBranchId(newBranch.id);
 
-        try {
-          await saveBranch(newBranch);
-        } catch (e) {
-          console.warn('Could not save new branch to cloud, saved locally:', e);
-        }
+        // 2. Save new branch items to Google Sheets via unlimited chunked processing
+        await importItemsToBranchInSheets(newBranch.id, formattedItems, onProgress);
       } else {
-        const branch = branches.find((b) => b.id === branchIdOrNewName);
-        if (!branch) return;
+        const branch = branches.find((b) => b.id === branchIdOrNewName || b.code === branchIdOrNewName || b.name === branchIdOrNewName);
+        if (!branch) {
+          throw new Error('ไม่พบข้อมูลสาขาที่ระบุ');
+        }
 
-        const processed = processItems(
+        const newProcessed = processItems(
           importedItems.map((item, idx) => ({
             ...item,
+            barcode: String(item.barcode || item.sku || `BC-${idx + 1}`).trim(),
+            name: String(item.name || `สินค้า ${item.sku || idx + 1}`).trim(),
+            systemQty: Number(item.systemQty ?? 0),
+            scannedQty: Number(item.scannedQty ?? 0),
             auditDate: effectiveAuditDate,
             id: `item-${Date.now()}-${idx}`,
           }))
         );
 
+        // Merge newly imported items with existing branch items
+        const combinedItems = [...branch.items, ...newProcessed];
+
         const updated: Branch = {
           ...branch,
           auditDate: effectiveAuditDate,
           auditScheduleDay: scheduleDay || branch.auditScheduleDay || 'OTHER',
-          items: processed,
+          items: combinedItems,
         };
 
-        // Set state and save to LocalStorage immediately (optimistic & offline support)
-        setBranches((prev) => {
-          const next = prev.map((b) => (b.id === branchIdOrNewName ? updated : b));
-          safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', next);
-          return next;
-        });
-        setSelectedBranchId(branchIdOrNewName);
+        // 1. Local Cache First: Save to LocalStorage, UI State, and IndexedDB immediately
+        const nextBranches = branches.map((b) => (b.id === branch.id ? updated : b));
+        setBranches(nextBranches);
+        safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', nextBranches);
+        saveBranchesToIndexedDb(nextBranches).catch((e) => console.warn('[App] IndexedDB save warning:', e));
+        setSelectedBranchId(branch.id);
 
-        try {
-          await saveBranch(updated);
-        } catch (e) {
-          console.warn('Could not save updated branch to Google Sheets, saved locally:', e);
-        }
+        // 2. Post importItems chunked loop to Google Apps Script until 100%
+        await importItemsToBranchInSheets(branch.id, combinedItems, onProgress);
       }
-    } catch (err) {
+      return true;
+    } catch (err: any) {
       console.error('Error importing items to branch:', err);
+      throw err;
     } finally {
       setIsSubmitting(false);
-      setLoading(false);
+      // Wait 3 seconds before resuming auto-polling to ensure Google Sheets write is completed
+      setTimeout(() => {
+        resumePolling();
+      }, 3000);
     }
   };
 
@@ -716,7 +789,6 @@ export default function App() {
         alert('เกิดข้อผิดพลาดในการล้างข้อมูล Google Sheets');
       } finally {
         setIsSubmitting(false);
-        setLoading(false);
       }
     }
   };
@@ -873,6 +945,7 @@ export default function App() {
         setUserRole={setUserRole}
         isConnected={isConnected}
         isOffline={isOffline}
+        isSubmitting={isSubmitting}
       />
 
       {/* Main Container */}
@@ -926,6 +999,17 @@ export default function App() {
                 onDeleteBranch={handleDeleteBranch}
                 onForceRecoverDigital={handleForceRecoverDigitalBranch}
                 recoveryLog={debugMessage}
+              />
+            )}
+
+            {activeTab === 'monthly' && (
+              <MonthlyAuditPerformanceDashboard
+                branches={branches}
+                onSelectBranchForReconciliation={(branchId) => {
+                  setSelectedBranchId(branchId);
+                  setActiveTab('reconciliation');
+                }}
+                onOpenPdaScanner={(branchId) => handleOpenPdaForBranch(branchId)}
               />
             )}
 

@@ -117,3 +117,65 @@ export interface EngineJsonOutput {
     }>;
   }>;
 }
+
+export interface MonthlyAuditScorecard {
+  branchId: string;
+  branchCode: string;
+  branchName: string;
+  region: string;
+  assignedAuditor: string;
+  auditScheduleDay?: string;
+  requiredRounds: number; // e.g. 8 rounds/month (4 Thursdays + 4 Fridays)
+  submittedRounds: number;
+  submissionRate: number; // percentage e.g. 100%
+  categoriesAudited: string[];
+  totalItems: number;
+  totalSystemQty: number;
+  totalScannedQty: number;
+  matchCount: number;
+  shortageCount: number;
+  overCount: number;
+  shortageQty: number;
+  overQty: number;
+  netVariance: number;
+  accuracyRate: number; // (matchCount / totalItems) * 100
+  grade: 'A' | 'B' | 'C' | 'D';
+  currentStatus: AuditStatus;
+  lastAuditDate?: string;
+}
+
+export interface MonthlyCategoryBreakdown {
+  category: string;
+  itemsCount: number;
+  totalScannedQty: number;
+  totalSystemQty: number;
+  matchCount: number;
+  shortageCount: number;
+  overCount: number;
+  shortageQty: number;
+  overQty: number;
+  netVariance: number;
+  accuracyRate: number;
+  shortageRate: number;
+  overRate: number;
+}
+
+export interface MonthlyPerformanceSummary {
+  monthKey: string; // e.g. "2026-08"
+  monthLabel: string; // e.g. "สิงหาคม 2569"
+  totalBranches: number;
+  activeBranches: number;
+  overallSubmissionRate: number;
+  overallAccuracyRate: number;
+  gradeACount: number;
+  gradeBCount: number;
+  gradeCCount: number;
+  topAuditedCategory: string;
+  highestShortageCategory: string;
+  highestOverCategory: string;
+  totalSystemUnits: number;
+  totalScannedUnits: number;
+  totalShortageUnits: number;
+  totalOverUnits: number;
+}
+
