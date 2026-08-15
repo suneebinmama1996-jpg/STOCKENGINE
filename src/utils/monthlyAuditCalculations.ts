@@ -60,41 +60,114 @@ export function generateMonthOptions(currentYearMonth = '2026-08'): Array<{ valu
   return options;
 }
 
-// Standard Category Definitions and Friendly Thai Labels
+// Standard Category Definitions - Clean Category Codes Only (as per HQ Weekly/Monthly Standards)
+export const STANDARD_CATEGORY_ORDER = [
+  'SK',
+  'SKMC',
+  'HT',
+  'PN/SY/SLT/TS',
+  'HJ',
+  'PP',
+  'INN',
+  'KK',
+  'JB',
+  'ผ้าละหมาด',
+  'KM',
+  'SPORT',
+  'BOX/BAG',
+  'GIFT',
+  'ของแถม',
+  'เครื่องประดับ',
+  'ส่งเสริมการขาย',
+] as const;
+
 export const STANDARD_CATEGORY_MAPPINGS: Record<string, { code: string; label: string; desc: string }> = {
-  SK: { code: 'SK', label: 'SK - สกินแคร์', desc: 'บำรุงผิวหน้าและผิวกายทั่วไป' },
-  SKMC: { code: 'SKMC', label: 'SKMC - สกินแคร์เคาน์เตอร์', desc: 'เคาน์เตอร์แบรนด์และพรีเมียมสกินแคร์' },
-  HT: { code: 'HT', label: 'HT - ผลิตภัณฑ์ดูแลเส้นผม', desc: 'แชมพู ทรีทเม้นท์ เซรั่มผม' },
-  'PN/SY/SLT/TS': { code: 'PN/SY/SLT/TS', label: 'PN/SY/SLT/TS - แป้ง/ลิป/เซรั่ม/โทนเนอร์', desc: 'เมคอัพและผลิตภัณฑ์บำรุงเฉพาะจุด' },
-  HJ: { code: 'HJ', label: 'HJ - ฮิญาบ & เครื่องแต่งกาย', desc: 'ผ้าคลุม เครื่องแต่งกายมุสลิม' },
-  PP: { code: 'PP', label: 'PP - ของใช้ส่วนตัว', desc: 'ของใช้ในชีวิตประจำวัน' },
-  INN: { code: 'INN', label: 'INN - อาหารเสริม & วิตามิน', desc: 'ผลิตภัณฑ์เสริมอาหาร อินเนอร์บิวตี้' },
-  KK: { code: 'KK', label: 'KK - เครื่องสำอางค์เกาหลี/ญี่ปุ่น', desc: 'K-Beauty & J-Beauty Cosmetics' },
-  JB: { code: 'JB', label: 'JB - เครื่องประดับ & บิวตี้แอคเซสเซอรี่', desc: 'อุปกรณ์แต่งหน้าและเครื่องประดับ' },
-  KM: { code: 'KM', label: 'KM - ขนม & เครื่องดื่ม', desc: 'ของว่าง เครื่องดื่ม ขนมนำเข้า' },
-  SPORT: { code: 'SPORT', label: 'SPORT - กีฬาและฟิตเนส', desc: 'อุปกรณ์ออกกำลังกายและสุขภาพ' },
-  'BOX/BAG': { code: 'BOX/BAG', label: 'BOX/BAG - กล่อง & ถุงบรรจุภัณฑ์', desc: 'อุปกรณ์แพ็คเกจจิ้ง' },
-  GIFT: { code: 'GIFT', label: 'GIFT - กิฟต์เซ็ต & ของขวัญ', desc: 'ชุดของขวัญโปรโมชั่น' },
-  OTHER: { code: 'OTHER', label: 'OTHER - สินค้าทั่วไปอื่นๆ', desc: 'หมวดหมู่อื่นๆ' },
+  SK: { code: 'SK', label: 'SK', desc: 'บำรุงผิวหน้าและผิวกายทั่วไป' },
+  SKMC: { code: 'SKMC', label: 'SKMC', desc: 'เคาน์เตอร์แบรนด์และพรีเมียมสกินแคร์' },
+  HT: { code: 'HT', label: 'HT', desc: 'แชมพู ทรีทเม้นท์ เซรั่มผม' },
+  'PN/SY/SLT/TS': { code: 'PN/SY/SLT/TS', label: 'PN/SY/SLT/TS', desc: 'แป้ง/ลิป/เซรั่ม/โทนเนอร์' },
+  SY: { code: 'PN/SY/SLT/TS', label: 'PN/SY/SLT/TS', desc: 'เซรั่ม' },
+  PN: { code: 'PN/SY/SLT/TS', label: 'PN/SY/SLT/TS', desc: 'แป้งพัฟ/แป้งฝุ่น' },
+  SLT: { code: 'PN/SY/SLT/TS', label: 'PN/SY/SLT/TS', desc: 'ลิปสติก/ทินท์' },
+  TS: { code: 'PN/SY/SLT/TS', label: 'PN/SY/SLT/TS', desc: 'โทนเนอร์/สเปรย์' },
+  HJ: { code: 'HJ', label: 'HJ', desc: 'ผ้าคลุม เครื่องแต่งกายมุสลิม' },
+  PP: { code: 'PP', label: 'PP', desc: 'ของใช้ในชีวิตประจำวัน' },
+  INN: { code: 'INN', label: 'INN', desc: 'ผลิตภัณฑ์เสริมอาหาร อินเนอร์บิวตี้' },
+  KK: { code: 'KK', label: 'KK', desc: 'K-Beauty & J-Beauty Cosmetics' },
+  JB: { code: 'JB', label: 'JB', desc: 'อุปกรณ์แต่งหน้าและเครื่องประดับ' },
+  ผ้าละหมาด: { code: 'ผ้าละหมาด', label: 'ผ้าละหมาด', desc: 'ชุดและผ้าละหมาด' },
+  KM: { code: 'KM', label: 'KM', desc: 'ของว่าง เครื่องดื่ม ขนมนำเข้า' },
+  SPORT: { code: 'SPORT', label: 'SPORT', desc: 'อุปกรณ์ออกกำลังกายและสุขภาพ' },
+  'BOX/BAG': { code: 'BOX/BAG', label: 'BOX/BAG', desc: 'อุปกรณ์แพ็คเกจจิ้ง' },
+  BOX: { code: 'BOX/BAG', label: 'BOX/BAG', desc: 'อุปกรณ์แพ็คเกจจิ้ง' },
+  BAG: { code: 'BOX/BAG', label: 'BOX/BAG', desc: 'ถุงบรรจุภัณฑ์' },
+  GIFT: { code: 'GIFT', label: 'GIFT', desc: 'ชุดของขวัญโปรโมชั่น' },
+  ของแถม: { code: 'ของแถม', label: 'ของแถม', desc: 'ของแถมส่งเสริมการขาย' },
+  เครื่องประดับ: { code: 'เครื่องประดับ', label: 'เครื่องประดับ', desc: 'เครื่องประดับแฟชั่น' },
+  ส่งเสริมการขาย: { code: 'ส่งเสริมการขาย', label: 'ส่งเสริมการขาย', desc: 'สื่อและอุปกรณ์ส่งเสริมการขาย' },
+  OTHER: { code: 'OTHER', label: 'OTHER', desc: 'หมวดหมู่อื่นๆ' },
 };
 
 /**
- * Normalizes and categorizes raw category string into standard code and Thai label
+ * Normalizes and categorizes raw category string into clean standard short code
  */
 export function getCategoryInfo(rawCategory: string): { code: string; label: string; desc: string } {
   const clean = (rawCategory || '').trim();
+  if (!clean) {
+    return { code: 'OTHER', label: 'OTHER', desc: 'หมวดหมู่อื่นๆ' };
+  }
+
   const upper = clean.toUpperCase();
 
+  // 1. Direct exact key match
+  if (STANDARD_CATEGORY_MAPPINGS[clean]) {
+    return STANDARD_CATEGORY_MAPPINGS[clean];
+  }
+  if (STANDARD_CATEGORY_MAPPINGS[upper]) {
+    return STANDARD_CATEGORY_MAPPINGS[upper];
+  }
+
+  // 2. Check if string starts with code followed by space or hyphen (e.g. "SK - สกินแคร์" -> "SK")
   for (const [key, info] of Object.entries(STANDARD_CATEGORY_MAPPINGS)) {
-    if (upper === key.toUpperCase() || upper.includes(key.toUpperCase()) || clean.includes(info.label)) {
+    const keyUpper = key.toUpperCase();
+    if (
+      upper === keyUpper ||
+      upper.startsWith(`${keyUpper} `) ||
+      upper.startsWith(`${keyUpper}-`) ||
+      upper.startsWith(`${keyUpper} -`) ||
+      upper.startsWith(`${keyUpper}/`) ||
+      clean.startsWith(`${key} `) ||
+      clean.startsWith(`${key}-`)
+    ) {
       return info;
     }
   }
 
-  // Fallback
+  // 3. Check Thai substring matches
+  if (clean.includes('ผ้าละหมาด')) return STANDARD_CATEGORY_MAPPINGS['ผ้าละหมาด'];
+  if (clean.includes('ของแถม') || clean.includes('แถม')) return STANDARD_CATEGORY_MAPPINGS['ของแถม'];
+  if (clean.includes('เครื่องประดับ')) return STANDARD_CATEGORY_MAPPINGS['เครื่องประดับ'];
+  if (clean.includes('ส่งเสริมการขาย') || clean.includes('โปรโมชั่น')) return STANDARD_CATEGORY_MAPPINGS['ส่งเสริมการขาย'];
+  if (clean.includes('สกินแคร์เคาน์เตอร์') || clean.includes('เคาน์เตอร์')) return STANDARD_CATEGORY_MAPPINGS['SKMC'];
+  if (clean.includes('สกินแคร์') || clean.includes('บำรุงผิว')) return STANDARD_CATEGORY_MAPPINGS['SK'];
+  if (clean.includes('ผม') || clean.includes('แชมพู') || clean.includes('ทรีทเม้นท์')) return STANDARD_CATEGORY_MAPPINGS['HT'];
+  if (clean.includes('ฮิญาบ') || clean.includes('ผ้าคลุม')) return STANDARD_CATEGORY_MAPPINGS['HJ'];
+  if (clean.includes('ของใช้')) return STANDARD_CATEGORY_MAPPINGS['PP'];
+  if (clean.includes('อาหารเสริม') || clean.includes('วิตามิน')) return STANDARD_CATEGORY_MAPPINGS['INN'];
+  if (clean.includes('ขนม') || clean.includes('เครื่องดื่ม')) return STANDARD_CATEGORY_MAPPINGS['KM'];
+  if (clean.includes('กีฬา') || clean.includes('ฟิตเนส')) return STANDARD_CATEGORY_MAPPINGS['SPORT'];
+  if (clean.includes('กล่อง') || clean.includes('ถุง') || clean.includes('แพ็ค')) return STANDARD_CATEGORY_MAPPINGS['BOX/BAG'];
+  if (clean.includes('ของขวัญ') || clean.includes('กิฟต์')) return STANDARD_CATEGORY_MAPPINGS['GIFT'];
+
+  // Clean code fallback - extract first word/token if alphanumeric
+  const firstWord = clean.split(/[\s-]+/)[0].toUpperCase();
+  if (STANDARD_CATEGORY_MAPPINGS[firstWord]) {
+    return STANDARD_CATEGORY_MAPPINGS[firstWord];
+  }
+
   return {
-    code: clean || 'OTHER',
-    label: clean || 'หมวดทั่วไป',
+    code: clean,
+    label: clean,
     desc: 'หมวดหมู่สินค้าในระบบ',
   };
 }
@@ -460,4 +533,225 @@ export function computeMonthlyPerformance(
     categoryBreakdowns,
     summary,
   };
+}
+
+/**
+ * Computes category breakdown specifically filtered for All Branches or a Selected Branch
+ */
+export function computeFilteredCategoryBreakdowns(
+  branches: Branch[],
+  branchFilter: string = 'ALL'
+): MonthlyCategoryBreakdown[] {
+  const cleanBranches = normalizeBranchesList(branches);
+
+  // Determine target branch or all branches
+  const targetBranches =
+    branchFilter === 'ALL'
+      ? cleanBranches
+      : cleanBranches.filter(
+          (b) => b.id === branchFilter || b.code.toUpperCase() === branchFilter.toUpperCase()
+        );
+
+  // Group items by category code
+  const categoryMap = new Map<
+    string,
+    {
+      code: string;
+      itemsCount: number;
+      totalScannedQty: number;
+      totalSystemQty: number;
+      matchCount: number;
+      shortageCount: number;
+      overCount: number;
+      mismatchSwapCount: number;
+      shortageQty: number;
+      overQty: number;
+      branchesWithItems: Set<string>;
+      branchesSubmitted: Set<string>;
+    }
+  >();
+
+  // Initialize with standard categories in predefined order
+  STANDARD_CATEGORY_ORDER.forEach((catCode) => {
+    categoryMap.set(catCode, {
+      code: catCode,
+      itemsCount: 0,
+      totalScannedQty: 0,
+      totalSystemQty: 0,
+      matchCount: 0,
+      shortageCount: 0,
+      overCount: 0,
+      mismatchSwapCount: 0,
+      shortageQty: 0,
+      overQty: 0,
+      branchesWithItems: new Set(),
+      branchesSubmitted: new Set(),
+    });
+  });
+
+  // Aggregate items from target branches
+  targetBranches.forEach((branch) => {
+    const items = safeParseItems(branch.items);
+    const isSubmitted = branch.auditStatus === 'SUBMITTED';
+
+    items.forEach((item) => {
+      const catInfo = getCategoryInfo(item.category || 'OTHER');
+      const catCode = catInfo.code;
+
+      if (!categoryMap.has(catCode)) {
+        categoryMap.set(catCode, {
+          code: catCode,
+          itemsCount: 0,
+          totalScannedQty: 0,
+          totalSystemQty: 0,
+          matchCount: 0,
+          shortageCount: 0,
+          overCount: 0,
+          mismatchSwapCount: 0,
+          shortageQty: 0,
+          overQty: 0,
+          branchesWithItems: new Set(),
+          branchesSubmitted: new Set(),
+        });
+      }
+
+      const entry = categoryMap.get(catCode)!;
+      const sysQ = item.systemQty || 0;
+      const scnQ = item.scannedQty || 0;
+      const diff = scnQ - sysQ;
+
+      entry.itemsCount++;
+      entry.totalSystemQty += sysQ;
+      entry.totalScannedQty += scnQ;
+      entry.branchesWithItems.add(branch.id);
+      if (isSubmitted) {
+        entry.branchesSubmitted.add(branch.id);
+      }
+
+      if (item.status === 'MATCH') {
+        entry.matchCount++;
+      } else if (item.status === 'SHORTAGE') {
+        entry.shortageCount++;
+        entry.shortageQty += Math.abs(item.variance || diff || 0);
+      } else if (item.status === 'OVER') {
+        entry.overCount++;
+        entry.overQty += Math.abs(item.variance || diff || 0);
+      }
+
+      // Check for swapped / mismatch (both system and scanned exist with differences)
+      if (item.status !== 'MATCH' && scnQ > 0 && sysQ > 0) {
+        entry.mismatchSwapCount++;
+      }
+    });
+  });
+
+  // Convert to ordered list
+  const results: MonthlyCategoryBreakdown[] = [];
+
+  // 1. Process standard categories first in fixed sequence
+  STANDARD_CATEGORY_ORDER.forEach((code) => {
+    const data = categoryMap.get(code);
+    if (!data) return;
+
+    let submissionStatus: 'ส่งครบแล้ว' | 'ไม่ส่ง' | 'ไม่มีสินค้า' = 'ส่งครบแล้ว';
+    if (data.itemsCount === 0) {
+      submissionStatus = 'ไม่มีสินค้า';
+    } else if (branchFilter !== 'ALL' && targetBranches[0]?.auditStatus === 'NOT_STARTED') {
+      submissionStatus = 'ไม่ส่ง';
+    } else {
+      submissionStatus = 'ส่งครบแล้ว';
+    }
+
+    const accuracyRate =
+      data.itemsCount > 0
+        ? Math.round((data.matchCount / data.itemsCount) * 1000) / 10
+        : 100;
+    const shortageRate =
+      data.itemsCount > 0
+        ? Math.round((data.shortageCount / data.itemsCount) * 1000) / 10
+        : 0;
+    const overRate =
+      data.itemsCount > 0
+        ? Math.round((data.overCount / data.itemsCount) * 1000) / 10
+        : 0;
+
+    const riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' =
+      data.itemsCount === 0
+        ? 'LOW'
+        : accuracyRate < 85 || data.shortageQty > 15 || data.mismatchSwapCount > 5
+        ? 'HIGH'
+        : accuracyRate < 95 || data.shortageQty > 5
+        ? 'MEDIUM'
+        : 'LOW';
+
+    results.push({
+      category: code,
+      categoryCode: code,
+      categoryLabel: code,
+      submissionStatus,
+      completedBranchesCount: data.branchesSubmitted.size,
+      totalBranchesAuditing: data.branchesWithItems.size,
+      itemsCount: data.itemsCount,
+      totalScannedQty: data.totalScannedQty,
+      totalSystemQty: data.totalSystemQty,
+      matchCount: data.matchCount,
+      shortageCount: data.shortageCount,
+      overCount: data.overCount,
+      mismatchSwapCount: data.mismatchSwapCount,
+      shortageQty: data.shortageQty,
+      overQty: data.overQty,
+      netVariance: data.totalScannedQty - data.totalSystemQty,
+      accuracyRate,
+      shortageRate,
+      overRate,
+      riskLevel,
+    });
+  });
+
+  // 2. Append any custom non-standard categories that have items
+  categoryMap.forEach((data, code) => {
+    if ((STANDARD_CATEGORY_ORDER as readonly string[]).includes(code)) return;
+    if (data.itemsCount === 0) return; // Skip empty custom categories
+
+    const accuracyRate =
+      data.itemsCount > 0
+        ? Math.round((data.matchCount / data.itemsCount) * 1000) / 10
+        : 100;
+    const shortageRate =
+      data.itemsCount > 0
+        ? Math.round((data.shortageCount / data.itemsCount) * 1000) / 10
+        : 0;
+    const overRate =
+      data.itemsCount > 0
+        ? Math.round((data.overCount / data.itemsCount) * 1000) / 10
+        : 0;
+
+    const riskLevel: 'LOW' | 'MEDIUM' | 'HIGH' =
+      accuracyRate < 85 ? 'HIGH' : accuracyRate < 95 ? 'MEDIUM' : 'LOW';
+
+    results.push({
+      category: code,
+      categoryCode: code,
+      categoryLabel: code,
+      submissionStatus: 'ส่งครบแล้ว',
+      completedBranchesCount: data.branchesSubmitted.size,
+      totalBranchesAuditing: data.branchesWithItems.size,
+      itemsCount: data.itemsCount,
+      totalScannedQty: data.totalScannedQty,
+      totalSystemQty: data.totalSystemQty,
+      matchCount: data.matchCount,
+      shortageCount: data.shortageCount,
+      overCount: data.overCount,
+      mismatchSwapCount: data.mismatchSwapCount,
+      shortageQty: data.shortageQty,
+      overQty: data.overQty,
+      netVariance: data.totalScannedQty - data.totalSystemQty,
+      accuracyRate,
+      shortageRate,
+      overRate,
+      riskLevel,
+    });
+  });
+
+  return results;
 }

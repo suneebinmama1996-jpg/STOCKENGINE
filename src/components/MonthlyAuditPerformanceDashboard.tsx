@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Branch, MonthlyAuditScorecard, MonthlyCategoryBreakdown } from '../types';
 import {
   computeMonthlyPerformance,
+  computeFilteredCategoryBreakdowns,
   generateMonthOptions,
   formatThaiMonth,
 } from '../utils/monthlyAuditCalculations';
@@ -63,6 +64,7 @@ export const MonthlyAuditPerformanceDashboard: React.FC<MonthlyAuditPerformanceD
   const [selectedMonth, setSelectedMonth] = useState<string>(currentYearMonth);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [gradeFilter, setGradeFilter] = useState<'ALL' | 'A' | 'B' | 'C' | 'D'>('ALL');
+  const [selectedBranchForCategory, setSelectedBranchForCategory] = useState<string>('ALL');
   const [activeSubTab, setActiveSubTab] = useState<'scorecard' | 'category' | 'kpi' | 'charts'>('scorecard');
 
   const monthOptions = useMemo(() => generateMonthOptions(currentYearMonth), [currentYearMonth]);
@@ -72,6 +74,65 @@ export const MonthlyAuditPerformanceDashboard: React.FC<MonthlyAuditPerformanceD
     () => computeMonthlyPerformance(branches, selectedMonth),
     [branches, selectedMonth]
   );
+
+  // Branch filter options for Category Breakdown dropdown
+  const branchFilterOptions = useMemo(() => {
+    const list: Array<{ id: string; code: string; name: string }> = [
+      { id: 'ALL', code: 'ALL', name: 'ทั้งหมด (All Branches)' },
+    ];
+    branches.forEach((b) => {
+      list.push({
+        id: b.id,
+        code: b.code || b.name,
+        name: b.name ? `${b.code} - ${b.name}` : b.code,
+      });
+    });
+    return list;
+  }, [branches]);
+
+  // Category breakdowns filtered by selected branch
+  const activeCategoryBreakdowns = useMemo(() => {
+    return computeFilteredCategoryBreakdowns(branches, selectedBranchForCategory);
+  }, [branches, selectedBranchForCategory]);
+
+  // Category stats summary for the selected branch filter
+  const categoryStatsSummary = useMemo(() => {
+    let totalSKUs = 0;
+    let totalSys = 0;
+    let totalScn = 0;
+    let totalMatch = 0;
+    let totalShortage = 0;
+    let totalShortageUnits = 0;
+    let totalOver = 0;
+    let totalOverUnits = 0;
+    let totalSwap = 0;
+
+    activeCategoryBreakdowns.forEach((c) => {
+      totalSKUs += c.itemsCount;
+      totalSys += c.totalSystemQty;
+      totalScn += c.totalScannedQty;
+      totalMatch += c.matchCount;
+      totalShortage += c.shortageCount;
+      totalShortageUnits += c.shortageQty;
+      totalOver += c.overCount;
+      totalOverUnits += c.overQty;
+      totalSwap += c.mismatchSwapCount || 0;
+    });
+
+    const avgAccuracy = totalSKUs > 0 ? Math.round((totalMatch / totalSKUs) * 1000) / 10 : 100;
+    return {
+      totalSKUs,
+      totalSys,
+      totalScn,
+      totalMatch,
+      totalShortage,
+      totalShortageUnits,
+      totalOver,
+      totalOverUnits,
+      totalSwap,
+      avgAccuracy,
+    };
+  }, [activeCategoryBreakdowns]);
 
   // Filtered scorecards based on search and grade
   const filteredScorecards = useMemo(() => {
@@ -665,132 +726,225 @@ export const MonthlyAuditPerformanceDashboard: React.FC<MonthlyAuditPerformanceD
 
       {/* 5. TABLE 2: สรุปการส่งข้อมูลและสถานะสินค้า แยกตามหมวดหมู่สินค้า */}
       {activeSubTab === 'category' && (
-        <div className="space-y-3">
-          <div className="bg-purple-50/60 border border-purple-200 p-3 rounded-lg flex flex-col sm:flex-row sm:items-center sm:justify-between text-xs gap-2">
-            <div className="flex items-center gap-2 text-purple-950 font-bold">
-              <Layers className="w-4 h-4 text-purple-600 shrink-0" />
-              <span>
-                สรุปการส่งข้อมูลและสถานะสินค้า (ส่งข้อมูลครบ / ขาด / เกิน / ขาด-สลับ) แยกตามหมวดหมู่สินค้า
+        <div className="space-y-3.5">
+          {/* Branch Filter Toolbar & Metric Badges */}
+          <div className="bg-white border border-slate-200 p-3.5 rounded-xl shadow-2xs flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+            {/* Branch Filter Dropdown */}
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className="flex items-center gap-1.5 text-xs font-black text-slate-800">
+                <Building2 className="w-4 h-4 text-purple-600 shrink-0" />
+                <span>ตัวกรองเลือกสาขา (Branch Filter):</span>
+              </div>
+              <div className="relative">
+                <select
+                  id="category-branch-filter"
+                  value={selectedBranchForCategory}
+                  onChange={(e) => setSelectedBranchForCategory(e.target.value)}
+                  className="bg-purple-50/80 hover:bg-purple-100 text-purple-950 text-xs font-black border border-purple-300 rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-purple-500 cursor-pointer shadow-2xs font-mono transition"
+                >
+                  {branchFilterOptions.map((opt) => (
+                    <option key={opt.id} value={opt.id} className="font-sans font-medium text-slate-900 bg-white">
+                      {opt.id === 'ALL' ? 'ทั้งหมด (All Branches)' : opt.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              {selectedBranchForCategory !== 'ALL' && (
+                <button
+                  type="button"
+                  onClick={() => setSelectedBranchForCategory('ALL')}
+                  className="text-[11px] text-purple-700 hover:text-purple-900 font-bold underline cursor-pointer"
+                >
+                  ดูทั้งหมด (All Branches)
+                </button>
+              )}
+            </div>
+
+            {/* Quick Metrics Badges for selected branch */}
+            <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+              <span className="px-2.5 py-1 rounded-md bg-slate-100 text-slate-700 font-bold border border-slate-200">
+                รวม: {categoryStatsSummary.totalSKUs.toLocaleString()} SKU ({categoryStatsSummary.totalScn.toLocaleString()} ชิ้น)
+              </span>
+              <span className="px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-800 font-black border border-emerald-200">
+                MATCH: {categoryStatsSummary.totalMatch.toLocaleString()} SKU
+              </span>
+              {categoryStatsSummary.totalShortage > 0 && (
+                <span className="px-2.5 py-1 rounded-md bg-rose-50 text-rose-800 font-bold border border-rose-200">
+                  ขาด: {categoryStatsSummary.totalShortage} SKU (-{categoryStatsSummary.totalShortageUnits} ชิ้น)
+                </span>
+              )}
+              {categoryStatsSummary.totalOver > 0 && (
+                <span className="px-2.5 py-1 rounded-md bg-amber-50 text-amber-800 font-bold border border-amber-200">
+                  เกิน: {categoryStatsSummary.totalOver} SKU (+{categoryStatsSummary.totalOverUnits} ชิ้น)
+                </span>
+              )}
+              {categoryStatsSummary.totalSwap > 0 && (
+                <span className="px-2.5 py-1 rounded-md bg-purple-50 text-purple-800 font-bold border border-purple-200">
+                  SWAP: {categoryStatsSummary.totalSwap} SKU
+                </span>
+              )}
+              <span className="px-2.5 py-1 rounded-md bg-blue-50 text-blue-900 font-black border border-blue-200">
+                แม่นยำ: {categoryStatsSummary.avgAccuracy}%
               </span>
             </div>
-            <span className="text-[11px] text-purple-800 font-semibold">
-              หมวดหมู่มาตรฐาน: SK, SKMC, HT, PN/SY/SLT/TS, HJ, PP, INN, KK, JB, KM, SPORT, BOX/BAG, GIFT
-            </span>
           </div>
 
-          <div className="overflow-x-auto border border-slate-200 rounded-lg shadow-2xs bg-white">
+          {/* 10-Column Category Table */}
+          <div className="overflow-x-auto border border-slate-200 rounded-xl shadow-2xs bg-white">
             <table className="min-w-full divide-y divide-slate-200 text-left text-xs text-slate-700">
               <thead className="bg-slate-900 text-white font-bold uppercase text-[10px] tracking-wider sticky top-0">
                 <tr>
-                  <th scope="col" className="py-3 px-3.5">หมวดหมู่สินค้า (Category)</th>
+                  <th scope="col" className="py-3 px-3.5">หมวดหมู่สินค้า (CATEGORY)</th>
                   <th scope="col" className="py-3 px-3 text-center">สถานะส่งข้อมูล</th>
                   <th scope="col" className="py-3 px-3 text-center">จำนวน SKU</th>
-                  <th scope="col" className="py-3 px-3 text-center">ระบบ vs สแกนจริง</th>
+                  <th scope="col" className="py-3 px-3 text-center">ระบบ VS สแกนจริง</th>
                   <th scope="col" className="py-3 px-3 text-center bg-slate-800 text-emerald-400">ตรงตามระบบ (MATCH)</th>
                   <th scope="col" className="py-3 px-3 text-center bg-slate-800 text-rose-400">สินค้าขาด (SHORTAGE)</th>
                   <th scope="col" className="py-3 px-3 text-center bg-slate-800 text-amber-400">สินค้าเกิน (OVER)</th>
                   <th scope="col" className="py-3 px-3 text-center bg-slate-800 text-purple-300">ขาด-สลับ (SWAP)</th>
-                  <th scope="col" className="py-3 px-3 text-center">% ความแม่นยำ</th>
+                  <th scope="col" className="py-3 px-3 text-center bg-blue-950 text-blue-200">% ความแม่นยำ</th>
                   <th scope="col" className="py-3 px-3 text-center">ระดับความเสี่ยง</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 font-sans">
-                {categoryBreakdowns.length === 0 ? (
+                {activeCategoryBreakdowns.length === 0 ? (
                   <tr>
-                    <td colSpan={10} className="py-8 text-center text-slate-400 font-medium">
-                      ไม่มีรายการหมวดหมู่สินค้าในเดือน {summary.monthLabel}
+                    <td colSpan={10} className="py-10 text-center text-slate-400 font-medium">
+                      ไม่พบรายการหมวดหมู่สินค้าในเดือน {summary.monthLabel}
                     </td>
                   </tr>
                 ) : (
-                  categoryBreakdowns.map((cat, cIdx) => (
-                    <tr key={`cat-${cIdx}`} className="hover:bg-slate-50 transition-colors">
-                      {/* Category Badge & Name */}
-                      <td className="py-3 px-3.5 font-black text-slate-900">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-[10px] font-mono font-black px-1.5 py-0.5 bg-purple-100 text-purple-800 rounded border border-purple-200">
-                            {cat.categoryCode || 'CAT'}
+                  activeCategoryBreakdowns.map((cat, cIdx) => {
+                    const isHighRisk = cat.riskLevel === 'HIGH';
+                    const hasItems = cat.itemsCount > 0;
+
+                    return (
+                      <tr key={`cat-${cat.categoryCode || cat.category}-${cIdx}`} className="hover:bg-slate-50 transition-colors">
+                        {/* คอลัมน์ 1: หมวดหมู่สินค้า (CATEGORY) - Clean Category Code Only without Thai description */}
+                        <td className="py-3 px-3.5">
+                          <span className="inline-flex items-center text-xs font-mono font-black px-2.5 py-1 bg-purple-50 text-purple-950 rounded-md border border-purple-200 shadow-2xs">
+                            {cat.categoryCode || cat.category}
                           </span>
-                          <span className="text-xs text-slate-800">{cat.categoryLabel || cat.category}</span>
-                        </div>
-                      </td>
+                        </td>
 
-                      {/* Submission Status */}
-                      <td className="py-3 px-3 text-center">
-                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
-                          <Check className="w-2.5 h-2.5 text-emerald-600" />
-                          <span>
-                            {cat.completedBranchesCount && cat.totalBranchesAuditing
-                              ? `${cat.completedBranchesCount}/${cat.totalBranchesAuditing} สาขา`
-                              : 'ส่งครบแล้ว'}
+                        {/* คอลัมน์ 2: สถานะส่งข้อมูล (ส่งครบแล้ว / ไม่ส่ง / ไม่มีสินค้า) */}
+                        <td className="py-3 px-3 text-center">
+                          {cat.submissionStatus === 'ไม่มีสินค้า' ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-slate-100 text-slate-600 border border-slate-200">
+                              ไม่มีสินค้า
+                            </span>
+                          ) : cat.submissionStatus === 'ไม่ส่ง' ? (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
+                              ไม่ส่ง
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                              <Check className="w-3 h-3 text-emerald-600" />
+                              <span>
+                                {selectedBranchForCategory === 'ALL' && cat.completedBranchesCount !== undefined && cat.totalBranchesAuditing !== undefined && cat.totalBranchesAuditing > 0
+                                  ? `ส่งครบแล้ว (${cat.completedBranchesCount}/${cat.totalBranchesAuditing} สาขา)`
+                                  : 'ส่งครบแล้ว'}
+                              </span>
+                            </span>
+                          )}
+                        </td>
+
+                        {/* คอลัมน์ 3: จำนวน SKU */}
+                        <td className="py-3 px-3 text-center font-mono font-bold">
+                          {hasItems ? (
+                            <span className="text-slate-900">{cat.itemsCount} SKU</span>
+                          ) : (
+                            <span className="text-slate-400">0 SKU</span>
+                          )}
+                        </td>
+
+                        {/* คอลัมน์ 4: ระบบ VS สแกนจริง */}
+                        <td className="py-3 px-3 text-center font-mono text-[11px]">
+                          {hasItems ? (
+                            <div className="flex items-center justify-center gap-1">
+                              <span className="text-slate-600">ระบบ: {cat.totalSystemQty.toLocaleString()}</span>
+                              <span className="text-slate-300">/</span>
+                              <span className="font-bold text-slate-900">สแกน: {cat.totalScannedQty.toLocaleString()}</span>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400">0 / 0</span>
+                          )}
+                        </td>
+
+                        {/* คอลัมน์ 5: ตรงตามระบบ (MATCH) */}
+                        <td className="py-3 px-3 text-center font-mono font-bold bg-emerald-50/20">
+                          {cat.matchCount > 0 ? (
+                            <span className="text-emerald-700">{cat.matchCount} SKU</span>
+                          ) : hasItems ? (
+                            <span className="text-slate-400">0 SKU</span>
+                          ) : (
+                            <span className="text-slate-400">-</span>
+                          )}
+                        </td>
+
+                        {/* คอลัมน์ 6: สินค้าขาด (SHORTAGE) */}
+                        <td className="py-3 px-3 text-center font-mono bg-rose-50/20">
+                          {cat.shortageCount > 0 ? (
+                            <div>
+                              <span className="font-bold text-rose-700">{cat.shortageCount} SKU</span>
+                              <div className="text-[10px] text-rose-600 font-semibold">(-{cat.shortageQty} ชิ้น)</div>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 font-bold">0 SKU</span>
+                          )}
+                        </td>
+
+                        {/* คอลัมน์ 7: สินค้าเกิน (OVER) */}
+                        <td className="py-3 px-3 text-center font-mono bg-amber-50/20">
+                          {cat.overCount > 0 ? (
+                            <div>
+                              <span className="font-bold text-amber-700">{cat.overCount} SKU</span>
+                              <div className="text-[10px] text-amber-600 font-semibold">(+{cat.overQty} ชิ้น)</div>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 font-bold">0 SKU</span>
+                          )}
+                        </td>
+
+                        {/* คอลัมน์ 8: ขาด-สลับ (SWAP) */}
+                        <td className="py-3 px-3 text-center font-mono bg-purple-50/20">
+                          {cat.mismatchSwapCount && cat.mismatchSwapCount > 0 ? (
+                            <span className="font-bold text-purple-700">{cat.mismatchSwapCount} SKU</span>
+                          ) : (
+                            <span className="text-slate-400">0 SKU</span>
+                          )}
+                        </td>
+
+                        {/* คอลัมน์ 9: % ความแม่นยำ */}
+                        <td className="py-3 px-3 text-center font-mono font-black bg-blue-50/30">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded text-xs ${
+                              cat.accuracyRate >= 95
+                                ? 'bg-emerald-100 text-emerald-800'
+                                : cat.accuracyRate >= 85
+                                ? 'bg-blue-100 text-blue-800'
+                                : 'bg-rose-100 text-rose-800'
+                            }`}
+                          >
+                            {cat.accuracyRate.toFixed(1)}%
                           </span>
-                        </span>
-                      </td>
+                        </td>
 
-                      {/* Counted SKUs */}
-                      <td className="py-3 px-3 text-center font-mono font-bold text-slate-800">
-                        {cat.itemsCount} SKU
-                      </td>
-
-                      {/* System vs Scanned Units */}
-                      <td className="py-3 px-3 text-center font-mono text-[11px]">
-                        <span className="text-slate-600">ระบบ: {cat.totalSystemQty}</span>
-                        <span className="mx-1 text-slate-300">/</span>
-                        <span className="font-bold text-slate-900">สแกน: {cat.totalScannedQty}</span>
-                      </td>
-
-                      {/* MATCH */}
-                      <td className="py-3 px-3 text-center font-mono font-bold text-emerald-700 bg-emerald-50/20">
-                        {cat.matchCount} SKU
-                      </td>
-
-                      {/* SHORTAGE */}
-                      <td className="py-3 px-3 text-center font-mono font-bold text-rose-700 bg-rose-50/20">
-                        <div>{cat.shortageCount} SKU</div>
-                        <div className="text-[10px] text-rose-600">(-{cat.shortageQty} ชิ้น)</div>
-                      </td>
-
-                      {/* OVER */}
-                      <td className="py-3 px-3 text-center font-mono font-bold text-amber-700 bg-amber-50/20">
-                        <div>{cat.overCount} SKU</div>
-                        <div className="text-[10px] text-amber-600">(+{cat.overQty} ชิ้น)</div>
-                      </td>
-
-                      {/* SWAP / Mismatch */}
-                      <td className="py-3 px-3 text-center font-mono font-bold text-purple-700 bg-purple-50/20">
-                        {cat.mismatchSwapCount ?? 0} SKU
-                      </td>
-
-                      {/* Accuracy % */}
-                      <td className="py-3 px-3 text-center font-mono font-black">
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded text-xs ${
-                            cat.accuracyRate >= 95
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : cat.accuracyRate >= 85
-                              ? 'bg-blue-100 text-blue-800'
-                              : 'bg-rose-100 text-rose-800'
-                          }`}
-                        >
-                          {cat.accuracyRate}%
-                        </span>
-                      </td>
-
-                      {/* Risk Level */}
-                      <td className="py-3 px-3 text-center">
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold ${
-                            cat.riskLevel === 'LOW'
-                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                              : cat.riskLevel === 'MEDIUM'
-                              ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                              : 'bg-rose-50 text-rose-700 border border-rose-200'
-                          }`}
-                        >
-                          {cat.riskLevel === 'LOW' ? 'ความเสี่ยงต่ำ' : cat.riskLevel === 'MEDIUM' ? 'ปานกลาง' : 'ความเสี่ยงสูง'}
-                        </span>
-                      </td>
-                    </tr>
-                  ))
+                        {/* คอลัมน์ 10: ระดับความเสี่ยง (ความเสี่ยงสูง / ปกติ) */}
+                        <td className="py-3 px-3 text-center">
+                          {isHighRisk ? (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800 border border-rose-300">
+                              ความเสี่ยงสูง
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                              ปกติ
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

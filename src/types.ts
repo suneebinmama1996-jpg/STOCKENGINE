@@ -150,6 +150,7 @@ export interface MonthlyCategoryBreakdown {
   category: string;
   categoryCode?: string;
   categoryLabel?: string;
+  submissionStatus?: 'ส่งครบแล้ว' | 'ไม่ส่ง' | 'ไม่มีสินค้า' | string;
   completedBranchesCount?: number;
   totalBranchesAuditing?: number;
   itemsCount: number;
