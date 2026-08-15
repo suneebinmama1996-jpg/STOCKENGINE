@@ -16,6 +16,7 @@ import {
   subscribeToBranches,
   saveBranch,
   importItemsToBranchInSheets,
+  clearBranchStockData,
   removeBranch,
   resetFirestoreDatabase,
   pausePolling,
@@ -804,6 +805,46 @@ export default function App() {
     }
   };
 
+  // Clear / Reset Stock Data of a specific branch in IndexedDB, LocalStorage & Google Sheets Stock_Data
+  const handleClearBranchStock = async (branchId: string) => {
+    setIsSubmitting(true);
+    pausePolling(60000);
+    try {
+      // 1. Immediate optimistic UI and local cache reset
+      const updatedBranches = branches.map((b) => {
+        if (b.id === branchId || b.code === branchId) {
+          return {
+            ...b,
+            items: [],
+            auditStatus: 'NOT_STARTED' as const,
+            startedAt: undefined,
+            submittedAt: undefined,
+          };
+        }
+        return b;
+      });
+
+      setBranches(updatedBranches);
+      safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', updatedBranches);
+      try {
+        await saveBranchesToIndexedDb(updatedBranches);
+      } catch (idbErr) {
+        console.warn('IndexedDB clear sync warning:', idbErr);
+      }
+
+      // 2. Clear from Google Sheets Stock_Data tab
+      await clearBranchStockData(branchId);
+
+      handleRefresh();
+    } catch (err: any) {
+      console.error('Failed to clear branch stock data:', err);
+      alert(`เกิดข้อผิดพลาดในการล้างข้อมูลสต็อกสาขา: ${err?.message || err}`);
+    } finally {
+      setIsSubmitting(false);
+      setTimeout(() => resumePolling(), 2500);
+    }
+  };
+
   const [debugMessage, setDebugMessage] = useState<string | null>(null);
 
   // Emergency Force Data Recovery for Digital Branch
@@ -1035,6 +1076,7 @@ export default function App() {
                 onOpenPdaScanner={(branchId) => handleOpenPdaForBranch(branchId)}
                 onOpenUploadModal={() => setIsUploadModalOpen(true)}
                 onUpdateBranchStatus={handleUpdateBranchStatus}
+                onClearBranchStock={handleClearBranchStock}
                 userRole={userRole}
               />
             )}
@@ -1080,6 +1122,7 @@ export default function App() {
         <MasterDataUploadModal
           branches={branches}
           onImportItemsToBranch={handleImportItemsToBranch}
+          onClearBranchData={handleClearBranchStock}
           onClose={() => setIsUploadModalOpen(false)}
         />
       )}
@@ -1093,6 +1136,7 @@ export default function App() {
           onAddBranch={handleAddBranch}
           onEditBranch={handleEditBranch}
           onDeleteBranch={handleDeleteBranch}
+          onClearBranchStock={handleClearBranchStock}
           onClose={() => setIsBranchManagerOpen(false)}
         />
       )}

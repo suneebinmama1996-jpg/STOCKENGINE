@@ -316,6 +316,73 @@ export async function saveBranch(rawBranch: Branch, originalId?: string, origina
 }
 
 /**
+ * Clears all stock items and resets scan counts for a specific branch
+ * in LocalStorage, IndexedDB, and Google Sheets (Stock_Data tab).
+ */
+export async function clearBranchStockData(branchId: string): Promise<void> {
+  // 1. Update LocalStorage cache immediately
+  const currentLocals = getLocalBranches();
+  const targetBranch = currentLocals.find(
+    (b) => b.id === branchId || b.code === branchId || b.name === branchId
+  );
+
+  if (targetBranch) {
+    targetBranch.items = [];
+    targetBranch.auditStatus = 'NOT_STARTED';
+    targetBranch.startedAt = undefined;
+    targetBranch.submittedAt = undefined;
+  }
+
+  const locals = normalizeBranchesList(currentLocals);
+  saveLocalBranches(locals);
+
+  // 2. Clear from IndexedDB immediately
+  try {
+    await saveBranchesToIndexedDb(locals);
+    console.log(`[Google Sheets Service] Cleared items for branch "${branchId}" in IndexedDB.`);
+  } catch (idbErr) {
+    console.warn('[Google Sheets Service] IndexedDB clear warning:', idbErr);
+  }
+
+  // 3. Send delete/clear request to Google Sheets (Stock_Data & Branches)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const payload = {
+      action: 'clearBranchData',
+      targetSheet: 'Stock_Data',
+      sheetName: 'Stock_Data',
+      overwrite: true,
+      mode: 'overwrite',
+      id: targetBranch?.id || branchId,
+      branchId: targetBranch?.id || branchId,
+      code: targetBranch?.code || branchId,
+      name: targetBranch?.name || branchId,
+      items: [],
+      rowValues: [],
+      branches: locals,
+    };
+
+    const response = await fetch(GOOGLE_SHEETS_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.warn(`[Google Sheets Service] Web App clearBranchData responded with HTTP ${response.status}`);
+    }
+  } catch (err: any) {
+    clearTimeout(timeoutId);
+    console.warn('[Google Sheets Service] Clear branch items network warning:', err?.message || err);
+  }
+}
+
+/**
  * Deletes a branch from Google Sheets and LocalStorage
  */
 export async function removeBranch(branchId: string): Promise<void> {

@@ -33,6 +33,7 @@ interface StockReconciliationTableProps {
   onOpenPdaScanner: (branchId: string) => void;
   onOpenUploadModal: () => void;
   onUpdateBranchStatus?: (branchId: string, status: AuditStatus) => void;
+  onClearBranchStock?: (branchId: string) => Promise<void> | void;
   userRole?: 'auditor' | 'branch';
   isSubmitting?: boolean;
 }
@@ -45,6 +46,7 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
   onDeleteItem,
   onOpenPdaScanner,
   onUpdateBranchStatus,
+  onClearBranchStock,
   userRole = 'auditor',
   isSubmitting = false,
 }) => {
@@ -54,6 +56,7 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
   const [locationFilter, setLocationFilter] = useState<string>('ALL');
   const [copiedLink, setCopiedLink] = useState(false);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
+  const [isClearing, setIsClearing] = useState(false);
 
   // Get active branch object
   const activeBranch = branches.find((b) => b.id === selectedBranchId);
@@ -147,6 +150,25 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
     }
   };
 
+  const handleClearThisBranch = async () => {
+    if (!activeBranch || !onClearBranchStock) return;
+    const itemsCount = (activeBranch.items || []).length;
+    const confirmMsg = `⚠️ คุณต้องการลบไฟล์สต็อกและรีเซ็ตค่านับสแกนทั้งหมดของสาขา "${activeBranch.code} - ${activeBranch.name}" ใช่หรือไม่?\n\n- รายการสินค้าเดิม ${itemsCount} SKU จะถูกลบออกให้เป็นค่าว่าง (0 รายการ)\n- ค่านับสแกนและผลต่างจะถูกรีเซ็ตใหม่ทั้งหมด\n- ข้อมูลในเครื่อง (IndexedDB/LocalStorage) และแท็บ Stock_Data บน Google Sheets จะถูกล้างทันที`;
+
+    if (confirm(confirmMsg)) {
+      setIsClearing(true);
+      try {
+        await onClearBranchStock(activeBranch.id);
+        setStatusNotice(`ลบไฟล์สต็อกและรีเซ็ตข้อมูลของสาขา "${activeBranch.name}" เรียบร้อยแล้ว!`);
+        setTimeout(() => setStatusNotice(null), 4000);
+      } catch (err: any) {
+        alert(`เกิดข้อผิดพลาดในการลบข้อมูลสต็อกสาขา: ${err?.message || err}`);
+      } finally {
+        setIsClearing(false);
+      }
+    }
+  };
+
   return (
     <div className="bg-white rounded border border-slate-200 shadow-2xs space-y-3 p-3 sm:p-4">
       {/* Table Title & Actions Header */}
@@ -220,8 +242,20 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
             </p>
           </div>
 
-          {/* Action Buttons: Submit Report & Copy Share Link */}
+          {/* Action Buttons: Submit Report, Clear Stock & Copy Share Link */}
           <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {onClearBranchStock && (
+              <button
+                onClick={handleClearThisBranch}
+                disabled={isClearing || isSubmitting}
+                className="px-3 py-1.5 rounded text-xs font-bold bg-rose-600/90 hover:bg-rose-600 text-white transition flex items-center gap-1.5 shadow-2xs border border-rose-500 active:scale-95 disabled:opacity-50"
+                title="ลบไฟล์สต็อกและรีเซ็ตค่านับสแกนทั้งหมดของสาขานี้ให้เป็นค่าว่าง 0 รายการ"
+              >
+                <Trash2 className="w-3.5 h-3.5 text-rose-200" />
+                <span>ลบไฟล์สต็อก/รีเซ็ต</span>
+              </button>
+            )}
+
             <button
               onClick={handleCopyBranchLink}
               className="px-3 py-1.5 rounded text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition flex items-center gap-1.5"

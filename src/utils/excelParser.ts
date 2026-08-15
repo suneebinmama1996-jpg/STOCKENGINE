@@ -94,14 +94,8 @@ function processRawRows(rows: ImportedRow[]): Omit<StockItem, 'id'>[] {
     ]);
     const systemQty = Number(systemQtyRaw) || 0;
 
-    const scannedQtyRaw = getValueFromRow(record, [
-      'จำนวนสแกนจริง',
-      'จำนวนสแกน',
-      'scannedqty',
-      'scanned_qty',
-      'จำนวนนับได้',
-    ]);
-    const scannedQty = Number(scannedQtyRaw) || 0;
+    // Reset scanned quantity to 0 by default on newly imported files so count starts from 0
+    const scannedQty = 0;
 
     const unitPriceRaw = getValueFromRow(record, ['ราคาต่อหน่วย', 'unitprice', 'price', 'ราคา']);
     const unitPrice = Number(unitPriceRaw) || 0;

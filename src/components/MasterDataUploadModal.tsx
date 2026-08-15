@@ -13,6 +13,8 @@ import {
   Calendar,
   Loader2,
   Server,
+  Trash2,
+  AlertTriangle,
 } from 'lucide-react';
 import { parseMasterFile, downloadSampleExcelTemplate } from '../utils/excelParser';
 import { ImportProgress } from '../utils/googleSheetsService';
@@ -28,12 +30,14 @@ interface MasterDataUploadModalProps {
     onProgress?: (progress: ImportProgress) => void,
     importMode?: 'overwrite' | 'append'
   ) => Promise<boolean | void> | void;
+  onClearBranchData?: (branchId: string) => Promise<void> | void;
   onClose: () => void;
 }
 
 export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
   branches,
   onImportItemsToBranch,
+  onClearBranchData,
   onClose,
 }) => {
   const [activeMode, setActiveMode] = useState<'FILE' | 'PASTE'>('FILE');
@@ -48,8 +52,11 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
   const [copiedSample, setCopiedSample] = useState(false);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [isClearingBranch, setIsClearingBranch] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<ImportProgress | null>(null);
   const [fileName, setFileName] = useState('');
+
+  const selectedBranchObj = branches.find((b) => b.id === targetBranchOption);
 
   // Preset Date calculations
   const getThursdayOfWeek = () => {
@@ -127,33 +134,46 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
         const rBarcode = r.barcode || r.Barcode || r.BarCode || '';
         const barcodeVal = String(rBarcode || rSku || `BC-${i + 1}`).trim();
         const skuVal = String(rSku || rBarcode || `SKU-${i + 1}`).trim();
+        const sysQty = Number(r.systemQty ?? r.system_qty ?? r.qty ?? r.quantity ?? r['จำนวนตามระบบ'] ?? 0);
+        // Force scannedQty to 0 on import so count starts from 0
+        const scnQty = 0;
         
+        const itemStatus: 'MATCH' | 'SHORTAGE' = sysQty === 0 ? 'MATCH' : 'SHORTAGE';
+        const itemColor: 'GREEN' | 'RED' = sysQty === 0 ? 'GREEN' : 'RED';
         return {
-        sku: skuVal,
-        barcode: barcodeVal,
-        name: String(r.name || r.Name || r.productName || `Item ${i + 1}`).trim(),
-        location: String(r.location || r.Location || r.bin || 'A-01').trim(),
-        category: String(r.category || r.Category || 'General').trim(),
-        systemQty: Number(r.systemQty ?? r.system_qty ?? r.qty ?? r.quantity ?? r['จำนวนตามระบบ'] ?? 0),
-        scannedQty: Number(r.scannedQty ?? r.scanned_qty ?? r['จำนวนสแกนจริง'] ?? 0),
-        variance: Number((r.scannedQty ?? 0) - (r.systemQty ?? 0)),
-        status:
-          (r.scannedQty ?? 0) === (r.systemQty ?? 0)
-            ? ('MATCH' as const)
-            : (r.scannedQty ?? 0) < (r.systemQty ?? 0)
-            ? ('SHORTAGE' as const)
-            : ('OVER' as const),
-        color:
-          (r.scannedQty ?? 0) === (r.systemQty ?? 0)
-            ? ('GREEN' as const)
-            : (r.scannedQty ?? 0) < (r.systemQty ?? 0)
-            ? ('RED' as const)
-            : ('YELLOW' as const),
+          sku: skuVal,
+          barcode: barcodeVal,
+          name: String(r.name || r.Name || r.productName || `Item ${i + 1}`).trim(),
+          location: String(r.location || r.Location || r.bin || 'A-01').trim(),
+          category: String(r.category || r.Category || 'General').trim(),
+          systemQty: sysQty,
+          scannedQty: scnQty,
+          variance: -sysQty,
+          status: itemStatus,
+          color: itemColor,
         };
       });
       setParsedItems(items);
     } catch {
       alert('รูปแบบ JSON ไม่ถูกต้อง กรุณาตรวจสอบวงเล็บและเครื่องหมายคำพูด');
+    }
+  };
+
+  const handleClearSelectedBranch = async () => {
+    if (!selectedBranchObj || !onClearBranchData) return;
+    const itemsCount = (selectedBranchObj.items || []).length;
+    const confirmMsg = `⚠️ คุณต้องการลบไฟล์สต็อกและรีเซ็ตค่านับสแกนทั้งหมดของสาขา "${selectedBranchObj.code} - ${selectedBranchObj.name}" ใช่หรือไม่?\n\n- รายการสินค้าเดิม ${itemsCount} SKU จะถูกลบออกให้เป็นค่าว่าง (0 รายการ)\n- ค่านับสแกนและผลต่างจะถูกรีเซ็ตใหม่ทั้งหมด\n- ระบบจะเคลียร์ข้อมูลในเครื่อง (IndexedDB/LocalStorage) และล้างข้อมูลในแท็บ Stock_Data บน Google Sheets ทันที`;
+    
+    if (confirm(confirmMsg)) {
+      setIsClearingBranch(true);
+      try {
+        await onClearBranchData(selectedBranchObj.id);
+        alert(`ลบไฟล์สต็อกและรีเซ็ตข้อมูลของสาขา "${selectedBranchObj.name}" เรียบร้อยแล้วค่ะ`);
+      } catch (err: any) {
+        alert(`เกิดข้อผิดพลาดในการลบข้อมูลสต็อกสาขา: ${err?.message || err}`);
+      } finally {
+        setIsClearingBranch(false);
+      }
     }
   };
 
@@ -174,14 +194,24 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
     });
 
     try {
-      const itemsWithDate = parsedItems.map((item) => ({
-        ...item,
-        barcode: String(item.barcode || item.sku || '').trim(),
-        name: String(item.name || '').trim(),
-        systemQty: Number(item.systemQty || 0),
-        scannedQty: Number(item.scannedQty || 0),
-        auditDate: auditDate || new Date().toISOString().slice(0, 10),
-      }));
+      const itemsWithDate = parsedItems.map((item) => {
+        const sysQty = Number(item.systemQty || 0);
+        // Ensure scanned count is 0 so count starts from 0
+        const scnQty = 0;
+        const itemStatus: 'MATCH' | 'SHORTAGE' = sysQty === 0 ? 'MATCH' : 'SHORTAGE';
+        const itemColor: 'GREEN' | 'RED' = sysQty === 0 ? 'GREEN' : 'RED';
+        return {
+          ...item,
+          barcode: String(item.barcode || item.sku || '').trim(),
+          name: String(item.name || '').trim(),
+          systemQty: sysQty,
+          scannedQty: scnQty,
+          variance: -sysQty,
+          status: itemStatus,
+          color: itemColor,
+          auditDate: auditDate || new Date().toISOString().slice(0, 10),
+        };
+      });
 
       if (targetBranchOption === 'NEW_BRANCH') {
         await onImportItemsToBranch(newBranchName, itemsWithDate, true, auditDate, undefined, (progress) => {
@@ -275,33 +305,71 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
           {/* Target Branch & Audit Date Picker */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             {/* Target Branch */}
-            <div className="bg-slate-50 p-3 rounded border border-slate-200 space-y-1.5">
-              <label className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                <Building2 className="w-3.5 h-3.5 text-blue-600" />
-                <span>เลือกสาขาปลายทาง:</span>
-              </label>
+            <div className="bg-slate-50 p-3 rounded border border-slate-200 space-y-1.5 flex flex-col justify-between">
+              <div>
+                <label className="text-xs font-bold text-slate-800 flex items-center justify-between mb-1">
+                  <span className="flex items-center gap-1.5">
+                    <Building2 className="w-3.5 h-3.5 text-blue-600" />
+                    <span>เลือกสาขาปลายทาง:</span>
+                  </span>
+                  {selectedBranchObj && (
+                    <span className="text-[10px] font-mono font-bold text-slate-600 bg-slate-200/80 px-1.5 py-0.5 rounded">
+                      {(selectedBranchObj.items || []).length} SKU
+                    </span>
+                  )}
+                </label>
 
-              <select
-                value={targetBranchOption}
-                onChange={(e) => setTargetBranchOption(e.target.value)}
-                className="w-full bg-white text-xs font-semibold text-slate-900 rounded px-2.5 py-1.5 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
-              >
-                {branches.map((b, idx) => (
-                  <option key={`${b.id}-${idx}`} value={b.id}>
-                    {b.code} - {b.name}
-                  </option>
-                ))}
-                <option value="NEW_BRANCH">➕ สร้างสาขาใหม่ (Create New Branch)</option>
-              </select>
+                <select
+                  value={targetBranchOption}
+                  onChange={(e) => setTargetBranchOption(e.target.value)}
+                  className="w-full bg-white text-xs font-semibold text-slate-900 rounded px-2.5 py-1.5 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >
+                  {branches.map((b, idx) => (
+                    <option key={`${b.id}-${idx}`} value={b.id}>
+                      {b.code} - {b.name} ({(b.items || []).length} SKU)
+                    </option>
+                  ))}
+                  <option value="NEW_BRANCH">➕ สร้างสาขาใหม่ (Create New Branch)</option>
+                </select>
 
-              {targetBranchOption === 'NEW_BRANCH' && (
-                <input
-                  type="text"
-                  placeholder="ระบุชื่อสาขาใหม่..."
-                  value={newBranchName}
-                  onChange={(e) => setNewBranchName(e.target.value)}
-                  className="w-full bg-white text-xs font-semibold text-slate-900 rounded px-2.5 py-1.5 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 mt-1"
-                />
+                {targetBranchOption === 'NEW_BRANCH' && (
+                  <input
+                    type="text"
+                    placeholder="ระบุชื่อสาขาใหม่..."
+                    value={newBranchName}
+                    onChange={(e) => setNewBranchName(e.target.value)}
+                    className="w-full bg-white text-xs font-semibold text-slate-900 rounded px-2.5 py-1.5 border border-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500 mt-1.5"
+                  />
+                )}
+              </div>
+
+              {/* Red Clear Branch Stock Button */}
+              {targetBranchOption !== 'NEW_BRANCH' && onClearBranchData && (
+                <div className="pt-2 border-t border-slate-200 mt-2 flex items-center justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={handleClearSelectedBranch}
+                    disabled={isClearingBranch || submitting}
+                    className={`w-full py-1.5 px-2.5 rounded text-xs font-bold transition flex items-center justify-center gap-1.5 border shadow-2xs ${
+                      isClearingBranch
+                        ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                        : 'bg-rose-50 hover:bg-rose-100 text-rose-700 border-rose-200 active:scale-98'
+                    }`}
+                    title="ลบไฟล์สต็อกและรีเซ็ตค่านับสแกนของสาขานี้ให้เป็นค่าว่าง 0 รายการ"
+                  >
+                    {isClearingBranch ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin text-rose-600" />
+                        <span>กำลังล้างข้อมูลสต็อกสาขา...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="w-3.5 h-3.5 text-rose-600" />
+                        <span>🗑️ ลบไฟล์สต็อก/รีเซ็ตข้อมูลสาขานี้</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               )}
             </div>
 
