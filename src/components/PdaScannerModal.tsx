@@ -1454,10 +1454,16 @@ export const PdaScannerModal: React.FC<PdaScannerModalProps> = ({
                   >
                     {/* Left: Prominent SKU, Product Name (if available), and Status Badge */}
                     <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
                         <span className="text-base sm:text-lg font-black font-mono tracking-wide text-slate-900 break-all leading-tight">
                           {displaySku}
                         </span>
+                        {item.isNewItem && (
+                          <span className="text-[10px] font-black text-white bg-emerald-600 px-2 py-0.5 rounded-full shadow-2xs animate-pulse flex items-center gap-0.5">
+                            <Sparkles className="w-2.5 h-2.5" />
+                            NEW
+                          </span>
+                        )}
                         {badgeEl}
                       </div>
                       {displayName && (

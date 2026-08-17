@@ -54,6 +54,8 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
   const [statusFilter, setStatusFilter] = useState<'ALL' | VarianceStatus>('ALL');
   const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
   const [locationFilter, setLocationFilter] = useState<string>('ALL');
+  const [roundFilter, setRoundFilter] = useState<string>('ALL');
+  const [onlyNewFilter, setOnlyNewFilter] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
   const [isClearing, setIsClearing] = useState(false);
@@ -74,9 +76,18 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
     }
   });
 
-  // Extract unique categories & locations for dropdown filters
+  // Extract unique categories, locations & audit rounds for dropdown filters
   const categories = Array.from(new Set(allFlatItems.map((fi) => fi.item?.category || 'ทั่วไป'))).filter(Boolean).sort();
   const locations = Array.from(new Set(allFlatItems.map((fi) => fi.item?.location || 'ไม่ระบุตำแหน่ง'))).filter(Boolean).sort();
+  const auditRounds = Array.from(
+    new Set(
+      allFlatItems
+        .map((fi) => fi.item?.batchId || fi.item?.importDate || fi.item?.auditDate || '')
+        .filter(Boolean)
+    )
+  ).sort();
+
+  const totalNewItemsCount = allFlatItems.filter((fi) => fi.item?.isNewItem).length;
 
   // Filter items
   const filteredFlatItems = allFlatItems.filter(({ item }) => {
@@ -84,21 +95,30 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
     const matchesStatus = statusFilter === 'ALL' || item.status === statusFilter;
     const matchesCat = categoryFilter === 'ALL' || item.category === categoryFilter;
     const matchesLoc = locationFilter === 'ALL' || item.location === locationFilter;
+    const matchesRound =
+      roundFilter === 'ALL' ||
+      item.batchId === roundFilter ||
+      item.importDate === roundFilter ||
+      item.auditDate === roundFilter;
+    const matchesNew = !onlyNewFilter || item.isNewItem;
+
     const query = searchQuery.toLowerCase();
     const sku = (item.sku || '').toLowerCase();
     const barcode = (item.barcode || '').toLowerCase();
     const name = (item.name || '').toLowerCase();
     const location = (item.location || '').toLowerCase();
     const category = (item.category || '').toLowerCase();
+    const batch = (item.batchId || '').toLowerCase();
 
     const matchesSearch =
       sku.includes(query) ||
       barcode.includes(query) ||
       name.includes(query) ||
       location.includes(query) ||
-      category.includes(query);
+      category.includes(query) ||
+      batch.includes(query);
 
-    return matchesStatus && matchesCat && matchesLoc && matchesSearch;
+    return matchesStatus && matchesCat && matchesLoc && matchesRound && matchesNew && matchesSearch;
   });
 
   // Count items by status
@@ -300,7 +320,7 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
       )}
 
       {/* Filter Toolbar */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2 bg-slate-50 p-2.5 rounded border border-slate-200">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2 bg-slate-50 p-2.5 rounded border border-slate-200">
         {/* Search */}
         <div className="relative col-span-1 sm:col-span-2 lg:col-span-1">
           <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2" />
@@ -321,6 +341,7 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
             onChange={(e) => {
               setSelectedBranchId(e.target.value);
               setLocationFilter('ALL');
+              setRoundFilter('ALL');
             }}
             className="w-full bg-transparent text-xs text-slate-800 focus:outline-none cursor-pointer font-medium"
           >
@@ -328,6 +349,23 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
             {branches.map((b, idx) => (
               <option key={`${b.id}-${idx}`} value={b.id}>
                 {b.code} - {b.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {/* Audit Round / Batch Isolation Filter */}
+        <div className="flex items-center bg-white border border-slate-300 rounded px-2 py-1">
+          <Tag className="w-3.5 h-3.5 text-purple-600 mr-1.5 shrink-0" />
+          <select
+            value={roundFilter}
+            onChange={(e) => setRoundFilter(e.target.value)}
+            className="w-full bg-transparent text-xs text-slate-800 focus:outline-none cursor-pointer font-semibold"
+          >
+            <option value="ALL">📅 ทุกรอบการตรวจนับ ({auditRounds.length})</option>
+            {auditRounds.map((round) => (
+              <option key={round} value={round}>
+                รอบ {round}
               </option>
             ))}
           </select>
@@ -367,11 +405,11 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
           </select>
         </div>
 
-        {/* Stats Filter Tabs */}
-        <div className="flex items-center gap-1 bg-white p-1 rounded border border-slate-300 overflow-x-auto">
+        {/* Stats Filter Tabs & Only New Toggle */}
+        <div className="flex items-center gap-1 bg-white p-1 rounded border border-slate-300 overflow-x-auto col-span-1 sm:col-span-2 lg:col-span-1">
           <button
             onClick={() => setStatusFilter('ALL')}
-            className={`px-2 py-0.5 text-[11px] font-bold rounded ${
+            className={`px-1.5 py-0.5 text-[10px] font-bold rounded ${
               statusFilter === 'ALL' ? 'bg-slate-900 text-white' : 'text-slate-600 hover:text-slate-900'
             }`}
           >
@@ -379,31 +417,31 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
           </button>
           <button
             onClick={() => setStatusFilter('MATCH')}
-            className={`px-2 py-0.5 text-[11px] font-bold rounded flex items-center gap-1 ${
+            className={`px-1.5 py-0.5 text-[10px] font-bold rounded flex items-center gap-1 ${
               statusFilter === 'MATCH' ? 'bg-emerald-700 text-white' : 'text-emerald-700 hover:bg-emerald-50'
             }`}
           >
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
             MATCH ({matchCount})
           </button>
           <button
             onClick={() => setStatusFilter('SHORTAGE')}
-            className={`px-2 py-0.5 text-[11px] font-bold rounded flex items-center gap-1 ${
+            className={`px-1.5 py-0.5 text-[10px] font-bold rounded flex items-center gap-1 ${
               statusFilter === 'SHORTAGE' ? 'bg-rose-700 text-white' : 'text-rose-700 hover:bg-rose-50'
             }`}
           >
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-500"></span>
-            SHORTAGE ({shortageCount})
+            ขาด ({shortageCount})
           </button>
-          <button
-            onClick={() => setStatusFilter('OVER')}
-            className={`px-2 py-0.5 text-[11px] font-bold rounded flex items-center gap-1 ${
-              statusFilter === 'OVER' ? 'bg-amber-600 text-white' : 'text-amber-800 hover:bg-amber-50'
-            }`}
-          >
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-500"></span>
-            OVER ({overCount})
-          </button>
+          {totalNewItemsCount > 0 && (
+            <button
+              onClick={() => setOnlyNewFilter(!onlyNewFilter)}
+              className={`px-1.5 py-0.5 text-[10px] font-black rounded flex items-center gap-1 transition ${
+                onlyNewFilter ? 'bg-emerald-600 text-white shadow-2xs' : 'text-emerald-700 bg-emerald-50 border border-emerald-200'
+              }`}
+              title="กรองดูเฉพาะสินค้า SKU ที่เพิ่งนำเข้าใหม่ในรอบล่าสุด"
+            >
+              NEW ({totalNewItemsCount})
+            </button>
+          )}
         </div>
       </div>
 
@@ -457,8 +495,22 @@ export const StockReconciliationTable: React.FC<StockReconciliationTableProps> =
 
                     {/* SKU / Barcode */}
                     <td className="py-2 px-2.5">
-                      <div className="font-mono font-bold text-slate-900">{item.sku || item.barcode || item.name || 'SKU-001'}</div>
-                      <div className="font-mono text-[10px] text-slate-500">{item.barcode || item.sku || '-'}</div>
+                      <div className="flex items-center gap-1.5 font-mono font-bold text-slate-900">
+                        <span>{item.sku || item.barcode || item.name || 'SKU-001'}</span>
+                        {item.isNewItem && (
+                          <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 bg-emerald-600 text-white rounded-full text-[9px] font-black uppercase tracking-wider shadow-2xs animate-pulse">
+                            NEW
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 font-mono text-[10px] text-slate-500 mt-0.5">
+                        <span>{item.barcode || item.sku || '-'}</span>
+                        {item.batchId && (
+                          <span className="text-[9px] bg-slate-100 text-slate-600 px-1 rounded border border-slate-200" title={`รอบ: ${item.batchId}`}>
+                            {item.importDate || item.batchId}
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* Name & Category */}

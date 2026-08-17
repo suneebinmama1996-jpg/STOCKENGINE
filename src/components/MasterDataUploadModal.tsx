@@ -15,9 +15,13 @@ import {
   Server,
   Trash2,
   AlertTriangle,
+  Code,
+  ShieldCheck,
+  Sparkles,
 } from 'lucide-react';
 import { parseMasterFile, downloadSampleExcelTemplate } from '../utils/excelParser';
 import { ImportProgress } from '../utils/googleSheetsService';
+import { RECOMMENDED_APPS_SCRIPT_CODE } from '../utils/appsScriptCodeTemplate';
 
 interface MasterDataUploadModalProps {
   branches: Branch[];
@@ -40,8 +44,9 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
   onClearBranchData,
   onClose,
 }) => {
-  const [activeMode, setActiveMode] = useState<'FILE' | 'PASTE'>('FILE');
+  const [activeMode, setActiveMode] = useState<'FILE' | 'PASTE' | 'APPS_SCRIPT'>('FILE');
   const [importMode, setImportMode] = useState<'overwrite' | 'append'>('overwrite');
+  const [copiedScript, setCopiedScript] = useState(false);
   const [targetBranchOption, setTargetBranchOption] = useState<string>(
     branches[0]?.id || 'NEW_BRANCH'
   );
@@ -55,8 +60,29 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
   const [isClearingBranch, setIsClearingBranch] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<ImportProgress | null>(null);
   const [fileName, setFileName] = useState('');
+  const [showNewSkuAlert, setShowNewSkuAlert] = useState(false);
 
   const selectedBranchObj = branches.find((b) => b.id === targetBranchOption);
+
+  // New SKU Detection Analysis
+  const existingSkuSet = React.useMemo(() => {
+    if (!selectedBranchObj || !Array.isArray(selectedBranchObj.items)) return new Set<string>();
+    return new Set(
+      selectedBranchObj.items.map((i) => (i.sku || i.barcode || '').trim().toLowerCase()).filter(Boolean)
+    );
+  }, [selectedBranchObj]);
+
+  const detectedNewSkus = React.useMemo(() => {
+    if (!selectedBranchObj || (selectedBranchObj.items || []).length === 0 || parsedItems.length === 0) {
+      return [];
+    }
+    return parsedItems.filter((item) => {
+      const skuKey = (item.sku || item.barcode || '').trim().toLowerCase();
+      return skuKey && !existingSkuSet.has(skuKey);
+    });
+  }, [selectedBranchObj, parsedItems, existingSkuSet]);
+
+  const newSkusCount = detectedNewSkus.length;
 
   // Preset Date calculations
   const getThursdayOfWeek = () => {
@@ -194,12 +220,19 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
     });
 
     try {
+      const currentBatchId = `BATCH-${auditDate || new Date().toISOString().slice(0, 10)}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+      const currentImportDate = auditDate || new Date().toISOString().slice(0, 10);
+      const isExistingBranch = Boolean(selectedBranchObj && (selectedBranchObj.items || []).length > 0);
+
       const itemsWithDate = parsedItems.map((item) => {
         const sysQty = Number(item.systemQty || 0);
         // Ensure scanned count is 0 so count starts from 0
         const scnQty = 0;
         const itemStatus: 'MATCH' | 'SHORTAGE' = sysQty === 0 ? 'MATCH' : 'SHORTAGE';
         const itemColor: 'GREEN' | 'RED' = sysQty === 0 ? 'GREEN' : 'RED';
+        const skuKey = (item.sku || item.barcode || '').trim().toLowerCase();
+        const isItemNew = isExistingBranch ? !existingSkuSet.has(skuKey) : false;
+
         return {
           ...item,
           barcode: String(item.barcode || item.sku || '').trim(),
@@ -209,7 +242,10 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
           variance: -sysQty,
           status: itemStatus,
           color: itemColor,
-          auditDate: auditDate || new Date().toISOString().slice(0, 10),
+          auditDate: auditDate || currentImportDate,
+          batchId: currentBatchId,
+          importDate: currentImportDate,
+          isNewItem: isItemNew,
         };
       });
 
@@ -480,6 +516,57 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
             </div>
           </div>
 
+          {/* New SKU Detection Notification Alert */}
+          {parsedItems.length > 0 && selectedBranchObj && (selectedBranchObj.items || []).length > 0 && (
+            <div className={`p-3 rounded-lg border transition ${
+              newSkusCount > 0
+                ? 'bg-emerald-50/90 border-emerald-300 text-emerald-950'
+                : 'bg-slate-50 border-slate-200 text-slate-700'
+            }`}>
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-start gap-2">
+                  <div className={`p-1 rounded mt-0.5 ${newSkusCount > 0 ? 'bg-emerald-600 text-white' : 'bg-slate-300 text-slate-700'}`}>
+                    <Sparkles className="w-3.5 h-3.5" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-black flex items-center gap-2">
+                      <span>ระบบตรวจจับ SKU ใหม่ (New SKU Detector):</span>
+                      {newSkusCount > 0 ? (
+                        <span className="bg-emerald-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full animate-pulse">
+                          พบ SKU ใหม่ {newSkusCount.toLocaleString()} รายการ
+                        </span>
+                      ) : (
+                        <span className="bg-slate-200 text-slate-700 text-[10px] font-semibold px-2 py-0.5 rounded">
+                          ไม่มี SKU ใหม่ (ตรงกับฐานข้อมูลเดิม)
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] mt-0.5 text-slate-600">
+                      {newSkusCount > 0
+                        ? `ตรวจพบสินค้าที่ไม่เคยมีในสาขา "${selectedBranchObj.name}" จำนวน ${newSkusCount} SKU ระบบจะติดป้าย [NEW] และบันทึกรอบการนำเข้าลง Google Sheets ให้อัตโนมัติ`
+                        : `สินค้าทั้งหมด ${parsedItems.length} SKU มีอยู่ในระบบเดิมของสาขานี้แล้ว`}
+                    </p>
+                    {newSkusCount > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1.5 max-h-16 overflow-y-auto">
+                        {detectedNewSkus.slice(0, 8).map((skuItem, sIdx) => (
+                          <span key={sIdx} className="bg-emerald-100/80 text-emerald-800 text-[10px] font-mono px-1.5 py-0.5 rounded border border-emerald-300 flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
+                            {skuItem.sku || skuItem.barcode} - {skuItem.name}
+                          </span>
+                        ))}
+                        {newSkusCount > 8 && (
+                          <span className="text-[10px] text-emerald-700 font-semibold self-center">
+                            +{newSkusCount - 8} รายการเพิ่มเติม...
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Mode Switcher Tabs */}
           <div className="flex border-b border-slate-200">
             <button
@@ -505,7 +592,54 @@ export const MasterDataUploadModal: React.FC<MasterDataUploadModalProps> = ({
               <FileCode className="w-3.5 h-3.5" />
               <span>วางข้อความ JSON ตรงๆ (Paste JSON)</span>
             </button>
+
+            <button
+              onClick={() => setActiveMode('APPS_SCRIPT')}
+              className={`px-3 py-1.5 text-xs font-bold transition border-b-2 flex items-center gap-1.5 ${
+                activeMode === 'APPS_SCRIPT'
+                  ? 'border-blue-600 text-blue-600'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <Code className="w-3.5 h-3.5" />
+              <span>โค้ด Apps Script (Code.gs)</span>
+            </button>
           </div>
+
+          {/* Apps Script Guide Mode */}
+          {activeMode === 'APPS_SCRIPT' && (
+            <div className="space-y-3 bg-slate-900 p-3.5 rounded border border-slate-800 text-white">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                  <span className="text-xs font-bold text-slate-100">
+                    Google Apps Script Backend (Code.gs) พร้อม Batch setValues() & ลบข้อมูลสาขาเก่าอัตโนมัติ
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(RECOMMENDED_APPS_SCRIPT_CODE);
+                    setCopiedScript(true);
+                    setTimeout(() => setCopiedScript(false), 2500);
+                  }}
+                  className="px-2.5 py-1 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold flex items-center gap-1 transition shadow-xs"
+                >
+                  {copiedScript ? <Check className="w-3.5 h-3.5 text-emerald-300" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedScript ? 'คัดลอกโค้ดแล้ว!' : 'คัดลอก Code.gs ทั้งหมด'}</span>
+                </button>
+              </div>
+
+              <p className="text-[11px] text-slate-300">
+                หากต้องการอัปเดตสคริปต์ใน Google Sheets: ไปที่เมนู <b>ส่วนขยาย (Extensions) &gt; Apps Script</b> แล้ววางโค้ดชุดนี้ทับในไฟล์ <b>Code.gs</b> จากนั้นกด <b>ทำให้ใช้งานได้ (Deploy) &gt; รายการปรับใช้ใหม่ (New Deployment)</b>
+              </p>
+
+              <div className="max-h-60 overflow-y-auto rounded bg-slate-950 p-2.5 font-mono text-[10px] text-emerald-300 border border-slate-800 whitespace-pre">
+                {RECOMMENDED_APPS_SCRIPT_CODE}
+              </div>
+            </div>
+          )}
 
           {/* File Upload Mode */}
           {activeMode === 'FILE' && (

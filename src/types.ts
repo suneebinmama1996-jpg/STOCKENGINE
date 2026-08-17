@@ -16,6 +16,9 @@ export interface StockItem {
   color: VarianceColor;
   unitPrice?: number;
   auditDate?: string; // YYYY-MM-DD
+  batchId?: string;
+  importDate?: string;
+  isNewItem?: boolean;
   lastScannedAt?: string;
   notes?: string;
 }

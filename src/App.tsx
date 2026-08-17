@@ -22,6 +22,8 @@ import {
   pausePolling,
   resumePolling,
   getIsPollingPaused,
+  registerRollbackHandler,
+  recordOptimisticEdit,
   ImportProgress,
 } from './utils/googleSheetsService';
 import {
@@ -106,6 +108,59 @@ export default function App() {
     };
   }, []);
 
+  // Real-time listener for instant mobile / cross-tab stock sync
+  useEffect(() => {
+    const handleStockUpdated = (event: any) => {
+      console.log('[App] Received STOCK_DATA_UPDATED event:', event?.detail);
+      const detail = event?.detail || {};
+      const updatedBId = detail.branchId || detail.branchCode;
+
+      // Force instant reload from IndexedDB and LocalStorage
+      loadBranchesFromIndexedDb()
+        .then((idbBranches) => {
+          if (idbBranches && idbBranches.length > 0) {
+            const clean = normalizeBranchesList(idbBranches.filter((b) => !isMockBranch(b)));
+            setBranches(clean);
+            safeSetLocalStorage('STOCK_ENGINE_REAL_DATA', clean);
+          }
+        })
+        .catch(() => {
+          const cached = safeGetLocalStorage<Branch[]>('STOCK_ENGINE_REAL_DATA', []);
+          if (cached && cached.length > 0) {
+            setBranches(cached);
+          }
+        });
+
+      if (updatedBId) {
+        setSelectedBranchId((prev) => (prev === 'ALL' || prev === updatedBId ? updatedBId : prev));
+      }
+      setRefreshTrigger((prev) => prev + 1);
+    };
+
+    window.addEventListener('STOCK_DATA_UPDATED', handleStockUpdated);
+
+    let channel: BroadcastChannel | null = null;
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      try {
+        channel = new BroadcastChannel('STOCK_ENGINE_SYNC_CHANNEL');
+        channel.onmessage = (msgEvent) => {
+          if (msgEvent.data && msgEvent.data.type === 'STOCK_DATA_UPDATED') {
+            handleStockUpdated({ detail: msgEvent.data });
+          }
+        };
+      } catch (e) {
+        // broadcastchannel not supported or restricted
+      }
+    }
+
+    return () => {
+      window.removeEventListener('STOCK_DATA_UPDATED', handleStockUpdated);
+      if (channel) {
+        channel.close();
+      }
+    };
+  }, []);
+
   const [userRole, setUserRole] = useState<'auditor' | 'branch'>(() => {
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
@@ -146,6 +201,16 @@ export default function App() {
   const handleRefresh = () => {
     setRefreshTrigger((prev) => prev + 1);
   };
+
+  // Register Rollback Handler to gracefully revert UI if background cloud sync permanently fails
+  useEffect(() => {
+    const unregister = registerRollbackHandler((previousBranches, reason) => {
+      setBranches(previousBranches);
+      setSyncError(`⚠️ ${reason}`);
+      setTimeout(() => setSyncError(null), 6000);
+    });
+    return unregister;
+  }, []);
 
   // 1. Clean up any Mock Data in LocalStorage on startup
   useEffect(() => {
@@ -297,12 +362,18 @@ export default function App() {
     }
   }, [branches]);
 
-  // 3.6 URL Query Parameter Resolver Safeguard (branch / branchId / code)
+  // 3.6 URL Query Parameter Resolver & Bidirectional Sync
   useEffect(() => {
     if (loading) return;
     if (typeof window !== 'undefined') {
       const params = new URLSearchParams(window.location.search);
       const branchParam = params.get('branch') || params.get('branchId') || params.get('code');
+      const tabParam = params.get('tab');
+
+      if (tabParam && ['dashboard', 'monthly', 'reconciliation', 'pda', 'json'].includes(tabParam)) {
+        setActiveTab(tabParam as any);
+      }
+
       if (branchParam) {
         const matched = branches.find(b => 
           b && (
@@ -314,12 +385,37 @@ export default function App() {
         if (matched) {
           setSelectedBranchId(matched.id);
           setBranchParamError(false);
-        } else {
+        } else if (branches.length > 0) {
           setBranchParamError(true);
         }
       }
     }
   }, [loading, branches]);
+
+  // Keep URL search params in sync with active tab and branch selection
+  useEffect(() => {
+    if (loading || typeof window === 'undefined') return;
+    try {
+      const currentUrl = new URL(window.location.href);
+      if (selectedBranchId && selectedBranchId !== 'ALL') {
+        currentUrl.searchParams.set('branch', selectedBranchId);
+      } else {
+        currentUrl.searchParams.delete('branch');
+        currentUrl.searchParams.delete('branchId');
+        currentUrl.searchParams.delete('code');
+      }
+
+      if (activeTab && activeTab !== 'dashboard') {
+        currentUrl.searchParams.set('tab', activeTab);
+      } else {
+        currentUrl.searchParams.delete('tab');
+      }
+
+      window.history.replaceState({}, '', currentUrl.toString());
+    } catch (e) {
+      // ignore
+    }
+  }, [loading, selectedBranchId, activeTab]);
 
   const handleGoBackHome = () => {
     if (typeof window !== 'undefined') {
@@ -508,10 +604,14 @@ export default function App() {
 
   const auditSummary = computeAuditSummary(branches);
 
-  // Update Item Scanned Qty in Firestore
+  // 0-Second Instant Optimistic Update for Item Scanned Qty with Background Async Sync
   const handleUpdateScannedQty = async (branchId: string, itemId: string, newQty: number) => {
+    const previousBranches = branches;
     const branch = branches.find((b) => b.id === branchId);
     if (!branch) return;
+
+    // Track optimistic modification time to prevent auto-polling race conditions
+    recordOptimisticEdit(itemId);
 
     const updatedItems = branch.items.map((item) => {
       if (item.id !== itemId) return item;
@@ -536,18 +636,18 @@ export default function App() {
       items: updatedItems,
     };
 
-    // Optimistic local state update for near-instant client UI responsiveness
+    // Instant 0ms Optimistic UI Update across all tables and dashboards
     setBranches((prev) => prev.map((b) => (b.id === branchId ? updatedBranch : b)));
 
-    try {
-      await saveBranch(updatedBranch);
-    } catch (e) {
-      console.warn('Failed to save quantity to Google Sheets/Firestore:', e);
-    }
+    // Background Async Sync with Debounce & Rollback Safety
+    saveBranch(updatedBranch, undefined, undefined, previousBranches).catch((e) => {
+      console.warn('Background async save warning:', e);
+    });
   };
 
-  // PDA Barcode / SKU Scan Handler in Firestore with optional Location placement
+  // 0-Second Instant PDA Barcode / SKU Scan Handler with Location placement and Async Sync
   const handleScanBarcode = (branchId: string, barcodeOrSku: string, targetLocation?: string): StockItem | null => {
+    const previousBranches = branches;
     const branch = branches.find((b) => b.id === branchId);
     if (!branch) return null;
 
@@ -589,6 +689,7 @@ export default function App() {
       
       scannedResultItem = updated;
       updatedItems[matchIndex] = updated;
+      recordOptimisticEdit(updated.id);
     } else {
       // Barcode not found in branch, create a new item with 0 system qty (OVER item) placed in active box/location
       const newSku = barcodeOrSku.trim().toUpperCase();
@@ -609,6 +710,7 @@ export default function App() {
       };
       scannedResultItem = newItem;
       updatedItems.push(newItem);
+      recordOptimisticEdit(newItem.id);
     }
 
     const newBranchStatus: AuditStatus =
@@ -621,17 +723,20 @@ export default function App() {
       items: updatedItems,
     };
 
-    // Optimistic local state update
+    // Instant 0ms Optimistic local state update
     setBranches((prev) => prev.map((b) => (b.id === branchId ? updatedBranch : b)));
 
-    // Fire-and-forget save to Firestore for uninterrupted camera performance
-    saveBranch(updatedBranch).catch((e) => console.warn('Failed to save scanner update to Firestore/Sheets:', e));
+    // Fire-and-forget background save to Sheets for uninterrupted rapid camera scanning
+    saveBranch(updatedBranch, undefined, undefined, previousBranches).catch((e) =>
+      console.warn('Failed to save scanner update to Google Sheets:', e)
+    );
 
     return scannedResultItem;
   };
 
-  // Branch Audit Status Update in Firestore
+  // Branch Audit Status Update (0ms Instant Optimistic with Background Sync)
   const handleUpdateBranchStatus = async (branchId: string, status: AuditStatus) => {
+    const previousBranches = branches;
     const branch = branches.find((b) => b.id === branchId);
     if (!branch) return;
 
@@ -642,23 +747,19 @@ export default function App() {
       startedAt: status === 'IN_PROGRESS' && !branch.startedAt ? new Date().toISOString() : branch.startedAt,
     };
 
-    // Optimistic local update
+    // 0ms Optimistic local update
     setBranches((prev) => prev.map((b) => (b.id === branchId ? updated : b)));
 
-    setIsSubmitting(true);
-    try {
-      await saveBranch(updated);
-      handleRefresh();
-    } catch (e) {
-      alert('เกิดข้อผิดพลาดในการปรับปรุงสถานะการตรวจนับลงคลาวด์');
-    } finally {
-      setIsSubmitting(false);
-    }
+    // Background async sync
+    saveBranch(updated, undefined, undefined, previousBranches).catch((e) => {
+      console.warn('Failed to update audit status in cloud:', e);
+    });
   };
 
-  // Delete item from branch in Firestore
+  // Delete item from branch (0ms Instant Optimistic with Background Sync)
   const handleDeleteItem = async (branchId: string, itemId: string) => {
     if (!confirm('คุณต้องการลบรายการนี้ออกจากตารางตรวจนับใช่หรือไม่?')) return;
+    const previousBranches = branches;
     const branch = branches.find((b) => b.id === branchId);
     if (!branch) return;
 
@@ -667,18 +768,13 @@ export default function App() {
       items: branch.items.filter((item) => item.id !== itemId),
     };
 
-    // Optimistic local update
+    // 0ms Optimistic local update
     setBranches((prev) => prev.map((b) => (b.id === branchId ? updated : b)));
 
-    setIsSubmitting(true);
-    try {
-      await saveBranch(updated);
-      handleRefresh();
-    } catch (e) {
-      alert('เกิดข้อผิดพลาดในการลบรายการสินค้าจากระบบคลาวด์');
-    } finally {
-      setIsSubmitting(false);
-    }
+    // Background async sync
+    saveBranch(updated, undefined, undefined, previousBranches).catch((e) => {
+      console.warn('Failed to delete item from cloud:', e);
+    });
   };
 
   // Import Master Items to Branch or Create Branch in Google Sheets
@@ -998,6 +1094,7 @@ export default function App() {
         isConnected={isConnected}
         isOffline={isOffline}
         isSubmitting={isSubmitting}
+        onSyncFromCloud={handleRefresh}
       />
 
       {/* Main Container */}

@@ -100,6 +100,12 @@ function processRawRows(rows: ImportedRow[]): Omit<StockItem, 'id'>[] {
     const unitPriceRaw = getValueFromRow(record, ['ราคาต่อหน่วย', 'unitprice', 'price', 'ราคา']);
     const unitPrice = Number(unitPriceRaw) || 0;
 
+    const batchId = getValueFromRow(record, ['รอบการนับ', 'batchid', 'batch_id', 'batch', 'รอบ', 'audit_round', 'round']);
+    const importDate = getValueFromRow(record, ['วันที่นำเข้า', 'importdate', 'import_date', 'date_imported']);
+    const auditDate = getValueFromRow(record, ['วันที่ตรวจนับ', 'auditdate', 'audit_date', 'date']);
+    const isNewItemRaw = getValueFromRow(record, ['isnewitem', 'is_new_item', 'สินค้าใหม่', 'new_sku']);
+    const isNewItem = isNewItemRaw === 'true' || isNewItemRaw === 'TRUE' || isNewItemRaw === '1' || isNewItemRaw === 'ใช่';
+
     const { variance, status, color } = calculateItemVariance(systemQty, scannedQty);
 
     return {
@@ -114,6 +120,10 @@ function processRawRows(rows: ImportedRow[]): Omit<StockItem, 'id'>[] {
       status,
       color,
       unitPrice,
+      ...(batchId ? { batchId } : {}),
+      ...(importDate ? { importDate } : {}),
+      ...(auditDate ? { auditDate } : {}),
+      ...(isNewItem ? { isNewItem: true } : {}),
     };
   });
 }

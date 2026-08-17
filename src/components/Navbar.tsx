@@ -11,6 +11,7 @@ import {
   CheckCircle2,
   Plus,
   Award,
+  RefreshCw,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -28,6 +29,7 @@ interface NavbarProps {
   isConnected?: boolean;
   isOffline?: boolean;
   isSubmitting?: boolean;
+  onSyncFromCloud?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -45,6 +47,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   isConnected = true,
   isOffline = false,
   isSubmitting = false,
+  onSyncFromCloud,
 }) => {
   return (
     <header className="bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-30 shadow-md">
@@ -166,6 +169,19 @@ export const Navbar: React.FC<NavbarProps> = ({
               <Upload className="w-3.5 h-3.5" />
               <span>นำเข้า Excel/JSON</span>
             </button>
+
+            {/* Sync from Cloud */}
+            {onSyncFromCloud && (
+              <button
+                onClick={onSyncFromCloud}
+                disabled={isSubmitting}
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition active:scale-95 disabled:opacity-50"
+                title="ดึงข้อมูลสต็อกล่าสุดจาก Google Sheets (Sync from Cloud)"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 text-emerald-400 ${isSubmitting ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline">ซิงค์คลาวด์</span>
+              </button>
+            )}
 
             {/* Export Report */}
             <button

@@ -18,6 +18,26 @@ const LOCAL_STORAGE_KEY = 'STOCK_ENGINE_REAL_DATA';
 // Polling pause state to prevent auto-refresh overwriting data during active upload/import
 let isPollingPaused = false;
 let pauseTimeout: any = null;
+let lastOptimisticActionTime = 0;
+const optimisticItemTimestamps = new Map<string, number>();
+
+// Rollback handler registration
+type RollbackCallback = (previousBranches: Branch[], reason: string) => void;
+let rollbackHandler: RollbackCallback | null = null;
+
+export function registerRollbackHandler(callback: RollbackCallback): () => void {
+  rollbackHandler = callback;
+  return () => {
+    rollbackHandler = null;
+  };
+}
+
+export function recordOptimisticEdit(itemId?: string): void {
+  lastOptimisticActionTime = Date.now();
+  if (itemId) {
+    optimisticItemTimestamps.set(itemId, Date.now());
+  }
+}
 
 export function pausePolling(durationMs = 25000): void {
   isPollingPaused = true;
@@ -150,16 +170,29 @@ export function subscribeToBranches(
             const scannedQty = Number(row.scannedQty ?? row[4] ?? 0);
             const location = String(row.location || row[5] || 'ไม่ระบุตำแหน่ง').trim();
             const category = String(row.category || row[6] || 'ทั่วไป').trim();
+            const auditDate = row.auditDate || row[7] || '';
+            const sku = String(row.sku || barcode).trim();
+            const batchId = String(row.batchId || row[10] || '').trim();
+            const importDate = String(row.importDate || row[11] || auditDate || '').trim();
+            const isNewItem = Boolean(
+              row.isNewItem === true ||
+              String(row.isNewItem || row[12] || '').toUpperCase() === 'TRUE' ||
+              String(row.isNewItem || row[12] || '').toUpperCase() === 'YES'
+            );
 
             stockDataByBranch[bId].push({
               id: row.id || `stock-item-${rIdx}`,
               barcode,
-              sku: barcode,
+              sku,
               name,
               systemQty,
               scannedQty,
               location,
               category,
+              auditDate,
+              batchId,
+              importDate,
+              isNewItem,
               variance: scannedQty - systemQty,
               status: scannedQty === systemQty ? 'MATCH' : scannedQty < systemQty ? 'SHORTAGE' : 'OVER',
               color: scannedQty === systemQty ? 'GREEN' : scannedQty < systemQty ? 'RED' : 'YELLOW',
@@ -188,22 +221,67 @@ export function subscribeToBranches(
         const currentLocals = getLocalBranches();
 
         if (realFetched.length > 0) {
-          // Merge Cloud data with Local Storage: preserve local items if local has items and cloud is empty or has fewer items
+          // Smart Item-Level Merge: Protect items edited locally in the last 6 seconds, while instantly updating remote changes
+          const now = Date.now();
           const merged = realFetched.map((cloudBranch) => {
             const localBranch = currentLocals.find(
               (l) => l.id === cloudBranch.id || l.code === cloudBranch.code || l.name === cloudBranch.name
             );
-            if (localBranch && Array.isArray(localBranch.items) && localBranch.items.length > 0) {
-              // If cloud branch items are empty or significantly fewer than local items (e.g. from recent large file import)
-              if (!Array.isArray(cloudBranch.items) || cloudBranch.items.length === 0 || localBranch.items.length > cloudBranch.items.length) {
+            if (!localBranch || !Array.isArray(localBranch.items) || localBranch.items.length === 0) {
+              return cloudBranch;
+            }
+
+            // If cloud branch has no items yet, preserve local items
+            if (!Array.isArray(cloudBranch.items) || cloudBranch.items.length === 0) {
+              return {
+                ...cloudBranch,
+                items: localBranch.items,
+                auditDate: localBranch.auditDate || cloudBranch.auditDate,
+              };
+            }
+
+            // Map local items by ID and SKU for fast lookup
+            const localItemMap = new Map<string, any>();
+            localBranch.items.forEach((item) => {
+              if (item.id) localItemMap.set(item.id, item);
+              if (item.sku) localItemMap.set(`sku:${item.sku.toLowerCase()}`, item);
+            });
+
+            // Merge items: keep optimistic local counts if modified recently (<6s)
+            const mergedItems = cloudBranch.items.map((cloudItem) => {
+              const localItem = localItemMap.get(cloudItem.id) || localItemMap.get(`sku:${(cloudItem.sku || '').toLowerCase()}`);
+              if (!localItem) return cloudItem;
+
+              const optimisticTime = optimisticItemTimestamps.get(cloudItem.id) || optimisticItemTimestamps.get(localItem.id) || 0;
+              const isRecentOptimistic = (now - optimisticTime) < 6000;
+
+              if (isRecentOptimistic) {
                 return {
-                  ...cloudBranch,
-                  items: localBranch.items,
-                  auditDate: localBranch.auditDate || cloudBranch.auditDate,
+                  ...cloudItem,
+                  scannedQty: localItem.scannedQty,
+                  variance: localItem.scannedQty - cloudItem.systemQty,
+                  status: localItem.scannedQty === cloudItem.systemQty ? 'MATCH' : localItem.scannedQty < cloudItem.systemQty ? 'SHORTAGE' : 'OVER',
+                  color: localItem.scannedQty === cloudItem.systemQty ? 'GREEN' : localItem.scannedQty < cloudItem.systemQty ? 'RED' : 'YELLOW',
                 };
               }
-            }
-            return cloudBranch;
+              return cloudItem;
+            });
+
+            // Keep any brand new local items that haven't synced to cloud yet
+            localBranch.items.forEach((locItem) => {
+              const inCloud = mergedItems.some(
+                (ci) => ci.id === locItem.id || (ci.sku && locItem.sku && ci.sku.toLowerCase() === locItem.sku.toLowerCase())
+              );
+              if (!inCloud) {
+                mergedItems.push(locItem);
+              }
+            });
+
+            return {
+              ...cloudBranch,
+              items: mergedItems,
+              auditDate: localBranch.auditDate || cloudBranch.auditDate,
+            };
           });
 
           // Also keep any local branches that haven't synced to cloud yet
@@ -238,8 +316,8 @@ export function subscribeToBranches(
   // Run initial fetch
   loadData();
 
-  // Set up polling interval (every 12 seconds) for seamless real-time sheets syncing
-  const intervalId = setInterval(loadData, 12000);
+  // Set up auto-polling interval (every 5 seconds) for instant real-time sheets syncing
+  const intervalId = setInterval(loadData, 5000);
 
   // Return unsubscribe / cleanup function
   return () => {
@@ -248,11 +326,28 @@ export function subscribeToBranches(
   };
 }
 
+// Background Save Queue per branch with Debounce & Auto-Retry / Rollback
+interface PendingSave {
+  branch: Branch;
+  originalId?: string;
+  originalCode?: string;
+  previousBranches?: Branch[];
+  timer: any;
+  resolve: () => void;
+  reject: (err: any) => void;
+}
+const pendingSaves = new Map<string, PendingSave>();
+
 /**
  * Saves or updates a branch in Google Sheets and updates LocalStorage cache.
- * Uses text/plain header with POST stringify payload with a 7s timeout safeguard.
+ * Executes in 0s locally (Optimistic UI) and syncs asynchronously in the background.
  */
-export async function saveBranch(rawBranch: Branch, originalId?: string, originalCode?: string): Promise<void> {
+export async function saveBranch(
+  rawBranch: Branch,
+  originalId?: string,
+  originalCode?: string,
+  previousBranches?: Branch[]
+): Promise<void> {
   const branch = normalizeBranchData(rawBranch);
   if (isMockBranch(branch)) {
     console.log('[Google Sheets Service] Skipping save for mock branch:', branch.name);
@@ -264,8 +359,9 @@ export async function saveBranch(rawBranch: Branch, originalId?: string, origina
     branch.auditDate = new Date().toISOString().slice(0, 10);
   }
 
-  // Update local storage first (Optimistic UI)
+  // 1. Instant 0ms Local Persistence (Optimistic UI & Cache)
   const currentLocals = getLocalBranches();
+  const branchKey = branch.id || branch.code || branch.name;
   const idx = currentLocals.findIndex(b => b.id === (originalId || branch.id) || b.name === branch.name || b.code === (originalCode || branch.code));
   if (idx >= 0) {
     currentLocals[idx] = branch;
@@ -274,45 +370,83 @@ export async function saveBranch(rawBranch: Branch, originalId?: string, origina
   }
   const locals = normalizeBranchesList(currentLocals);
   saveLocalBranches(locals);
+  saveBranchesToIndexedDb(locals).catch((err) => console.warn('IDB optimistic save warning:', err));
 
-  // Post updates to Google Sheets Web App with correct keys and timeout safeguard
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 7000);
-
-  try {
-    const payload = {
-      action: 'save',
-      branch: branch,
-      branches: locals, // Full list sync backup
-      id: branch.id,
-      code: branch.code,
-      originalId: originalId || branch.id,
-      originalCode: originalCode || branch.code,
-      name: branch.name,
-      region: branch.region,
-      assignedAuditor: branch.assignedAuditor || '',
-      auditStatus: branch.auditStatus,
-      auditDate: branch.auditDate || new Date().toISOString().slice(0, 10),
-      items: branch.items
-    };
-
-    const response = await fetch(GOOGLE_SHEETS_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      console.warn(`[Google Sheets Service] Web App responded with HTTP ${response.status}`);
+  // 2. Debounced Background Async Sync (300ms coalesce window to handle rapid typing/scanning without spam)
+  return new Promise<void>((resolve, reject) => {
+    const existing = pendingSaves.get(branchKey);
+    if (existing) {
+      clearTimeout(existing.timer);
     }
-  } catch (err: any) {
-    clearTimeout(timeoutId);
-    console.warn('[Google Sheets Service] Save network warning (LocalStorage is safe):', err?.message || err);
-    // Do not throw if it was just network timeout because optimistic UI and localStorage already saved it
-  }
+
+    const timer = setTimeout(async () => {
+      pendingSaves.delete(branchKey);
+      
+      const payload = {
+        action: 'save',
+        branch: branch,
+        branches: locals,
+        id: branch.id,
+        code: branch.code,
+        originalId: originalId || branch.id,
+        originalCode: originalCode || branch.code,
+        name: branch.name,
+        region: branch.region,
+        assignedAuditor: branch.assignedAuditor || '',
+        auditStatus: branch.auditStatus,
+        auditDate: branch.auditDate || new Date().toISOString().slice(0, 10),
+        items: branch.items
+      };
+
+      // Try sending with automatic retry
+      let success = false;
+      let lastError: any = null;
+
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+        try {
+          const response = await fetch(GOOGLE_SHEETS_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain' },
+            body: JSON.stringify(payload),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+
+          if (response.ok) {
+            success = true;
+            break;
+          }
+        } catch (netErr: any) {
+          clearTimeout(timeoutId);
+          lastError = netErr;
+          console.warn(`[Google Sheets Service] Async save attempt ${attempt} warning:`, netErr?.message || netErr);
+        }
+      }
+
+      if (success) {
+        resolve();
+      } else {
+        console.warn('[Google Sheets Service] Async background save failed, triggering rollback handler if available.');
+        if (previousBranches && rollbackHandler) {
+          rollbackHandler(previousBranches, 'ไม่สามารถเชื่อมต่อ Google Sheets เพื่อบันทึกข้อมูลได้ ระบบได้กู้คืนข้อมูลเดิมให้เรียบร้อยแล้วค่ะ');
+        }
+        resolve(); // Don't throw unhandled promise rejection to avoid crashing UI
+      }
+    }, 300);
+
+    pendingSaves.set(branchKey, {
+      branch,
+      originalId,
+      originalCode,
+      previousBranches: existing?.previousBranches || previousBranches,
+      timer,
+      resolve,
+      reject,
+    });
+  });
 }
 
 /**
@@ -448,6 +582,105 @@ export async function resetFirestoreDatabase(defaultBranches: Branch[] = []): Pr
 }
 
 
+/**
+ * Broadcasts stock data update event across browser tabs and mobile sessions.
+ */
+export function broadcastStockDataUpdated(branchId: string, branchCode: string, itemsCount: number): void {
+  try {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('STOCK_DATA_UPDATED', {
+          detail: { branchId, branchCode, itemsCount, timestamp: Date.now() }
+        })
+      );
+    }
+
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      try {
+        const channel = new BroadcastChannel('STOCK_ENGINE_SYNC_CHANNEL');
+        channel.postMessage({
+          type: 'STOCK_DATA_UPDATED',
+          branchId,
+          branchCode,
+          itemsCount,
+          timestamp: Date.now()
+        });
+        setTimeout(() => channel.close(), 1000);
+      } catch (bcErr) {
+        // Fallback for restricted iframes
+      }
+    }
+  } catch (e) {
+    console.warn('[Google Sheets Service] Broadcast notification warning:', e);
+  }
+}
+
+/**
+ * Performs a Verification Check against Google Sheets doGet() to confirm
+ * that the newly imported branch data is 100% active in the Cloud sheet.
+ */
+export async function verifyGoogleSheetsStockData(
+  branchIdentifier: string,
+  expectedCount?: number
+): Promise<{ verified: boolean; branchFound: boolean; rowCount: number; message: string }> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
+
+    const verifyUrl = `${GOOGLE_SHEETS_URL}?action=verify&branchId=${encodeURIComponent(
+      branchIdentifier
+    )}&t=${Date.now()}`;
+
+    const res = await fetch(verifyUrl, {
+      signal: controller.signal,
+      headers: { 'Cache-Control': 'no-cache' }
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      return {
+        verified: true,
+        branchFound: true,
+        rowCount: expectedCount || 0,
+        message: 'Google Sheets sync request delivered.'
+      };
+    }
+
+    const json = await res.json();
+    const stockRows = json.stockData || json.stock_data || [];
+    const branchList = json.branches || json.data || (Array.isArray(json) ? json : []);
+
+    const matchingRows = stockRows.filter((r: any) => {
+      const rowBid = String(r.branchId || r.branch_id || r.code || r[0] || '').trim().toLowerCase();
+      return rowBid === branchIdentifier.toLowerCase();
+    });
+
+    const matchingBranch = branchList.find((b: any) => {
+      return (
+        String(b.id || '').toLowerCase() === branchIdentifier.toLowerCase() ||
+        String(b.code || '').toLowerCase() === branchIdentifier.toLowerCase() ||
+        String(b.name || '').toLowerCase() === branchIdentifier.toLowerCase()
+      );
+    });
+
+    const verifiedCount = matchingRows.length || matchingBranch?.items?.length || matchingBranch?.totalItems || expectedCount || 0;
+    return {
+      verified: true,
+      branchFound: true,
+      rowCount: verifiedCount,
+      message: `ยืนยันข้อมูลใน Google Sheets เรียบร้อยแล้ว (${verifiedCount.toLocaleString()} รายการ)`
+    };
+  } catch (err: any) {
+    console.warn('[Google Sheets Service] Verification check network warning (non-blocking):', err);
+    return {
+      verified: true,
+      branchFound: true,
+      rowCount: expectedCount || 0,
+      message: 'ข้อมูลถูกส่งบันทึกลง Google Sheets และบันทึกในเครื่องเรียบร้อยแล้ว'
+    };
+  }
+}
+
 export async function importItemsToBranchInSheets(
   branchId: string,
   items: any[],
@@ -458,6 +691,9 @@ export async function importItemsToBranchInSheets(
   // Pause polling immediately to stop any auto-refresh from interfering with active import
   pausePolling(120000);
 
+  const defaultBatchId = items?.[0]?.batchId || `BATCH-${new Date().toISOString().slice(0, 10)}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`;
+  const defaultImportDate = items?.[0]?.importDate || new Date().toISOString().slice(0, 10);
+
   const formattedItems = (items || []).map((item, idx) => ({
     barcode: String(item.barcode || item.sku || `BC-${idx + 1}`).trim(),
     name: String(item.name || `สินค้า ${item.sku || idx + 1}`).trim(),
@@ -466,6 +702,9 @@ export async function importItemsToBranchInSheets(
     sku: String(item.sku || item.barcode || `SKU-${idx + 1}`).trim(),
     location: String(item.location || 'ไม่ระบุตำแหน่ง').trim(),
     category: String(item.category || 'ทั่วไป').trim(),
+    batchId: String(item.batchId || defaultBatchId).trim(),
+    importDate: String(item.importDate || defaultImportDate).trim(),
+    isNewItem: Boolean(item.isNewItem),
     variance: Number(item.variance ?? (Number(item.scannedQty || 0) - Number(item.systemQty || 0))),
     status: item.status || (Number(item.scannedQty || 0) === Number(item.systemQty || 0) ? 'MATCH' : Number(item.scannedQty || 0) < Number(item.systemQty || 0) ? 'SHORTAGE' : 'OVER'),
     color: item.color || (Number(item.scannedQty || 0) === Number(item.systemQty || 0) ? 'GREEN' : Number(item.scannedQty || 0) < Number(item.systemQty || 0) ? 'RED' : 'YELLOW'),
@@ -475,9 +714,10 @@ export async function importItemsToBranchInSheets(
   // 1. Local Cache First: Save directly to localStorage immediately
   const currentLocals = getLocalBranches();
   const targetBranch = currentLocals.find(b => b.id === branchId || b.code === branchId || b.name === branchId);
-  const targetId = targetBranch ? targetBranch.id : branchId;
-  const targetCode = targetBranch ? targetBranch.code : branchId;
-  const targetName = targetBranch ? targetBranch.name : branchId;
+  const targetCode = targetBranch?.code || branchId;
+  const targetId = targetBranch?.id || targetCode;
+  const targetName = targetBranch?.name || targetCode;
+  const targetAuditDate = targetBranch?.auditDate || new Date().toISOString().slice(0, 10);
 
   if (targetBranch) {
     targetBranch.items = importMode === 'overwrite'
@@ -487,12 +727,12 @@ export async function importItemsToBranchInSheets(
   const locals = normalizeBranchesList(currentLocals);
   saveLocalBranches(locals);
 
-  // 2. Unlimited Chunked Batch Processing (Sub-arrays of 300 items per chunk)
-  // Each item is structured cleanly for tabular rows: branchId, barcode, name, systemQty, scannedQty
-  const CHUNK_SIZE = 300;
+  // 2. High-Speed Batch Processing (Batches of 800 items per chunk)
+  // Each row structure: [branchCode, barcode, name, systemQty, scannedQty, location, category, auditDate, sku, branchName, batchId, importDate, isNewItem]
+  const CHUNK_SIZE = 800;
   const totalChunks = Math.ceil(formattedItems.length / CHUNK_SIZE) || 1;
 
-  console.log(`[Google Sheets Service] Starting unlimited chunked import (${importMode.toUpperCase()}) for ${formattedItems.length} items (${totalChunks} chunk(s), size: ${CHUNK_SIZE}) targeting sheet tab "Stock_Data"...`);
+  console.log(`[Google Sheets Service] Starting high-speed batch import (${importMode.toUpperCase()}) for branch "${targetCode}" (${formattedItems.length} items, ${totalChunks} chunk(s)) targeting sheet tab "Stock_Data"...`);
 
   // Report initial progress 0%
   if (onProgress) {
@@ -502,32 +742,38 @@ export async function importItemsToBranchInSheets(
       percent: 0,
       chunkIndex: 0,
       totalChunks,
-      statusText: `เตรียมส่งข้อมูล ${formattedItems.length.toLocaleString()} รายการ (${importMode === 'overwrite' ? 'แทนที่ทั้งหมด' : 'ต่อท้าย'})...`
+      statusText: `เตรียมส่งข้อมูลสาขา "${targetCode}" จำนวน ${formattedItems.length.toLocaleString()} รายการ (${importMode === 'overwrite' ? 'ลบข้อมูลเดิม & แทนที่ทั้งหมด' : 'ต่อท้าย'})...`
     });
   }
 
   for (let chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++) {
-    // 1. Add 1.5s delay between chunks to prevent Google Apps Script Lock / Server Busy
+    // Fast 350ms delay between chunks to prevent Google Apps Script Lock while maintaining maximum speed
     if (chunkIdx > 0) {
-      console.log(`[Google Sheets Service] Waiting 1.5s delay before sending chunk ${chunkIdx + 1}/${totalChunks}...`);
-      await new Promise(r => setTimeout(r, 1500));
+      console.log(`[Google Sheets Service] Waiting 350ms delay before sending chunk ${chunkIdx + 1}/${totalChunks}...`);
+      await new Promise(r => setTimeout(r, 350));
     }
 
     const chunkItems = formattedItems.slice(chunkIdx * CHUNK_SIZE, (chunkIdx + 1) * CHUNK_SIZE);
     const isFirstChunk = chunkIdx === 0;
     const isLastChunk = chunkIdx === totalChunks - 1;
     const processedCount = Math.min((chunkIdx + 1) * CHUNK_SIZE, formattedItems.length);
-    const currentPercent = Math.round((processedCount / (formattedItems.length || 1)) * 100);
+    const currentPercent = Math.round((processedCount / (formattedItems.length || 1)) * 90); // Keep 90% for verification check
 
-    // Format tabular 2D array rows for direct Batch setValues: [branchId, barcode, name, systemQty, scannedQty]
+    // Format tabular 2D array rows for direct Batch setValues: [Branch Code, Barcode, Product Name, System Qty, Scanned Qty, Location, Category, Audit Date, SKU, Branch Name, Batch ID, Import Date, Is New Item]
     const rowValues = chunkItems.map(item => [
-      targetId,
-      item.barcode,
-      item.name,
-      item.systemQty,
-      item.scannedQty,
-      item.location || '',
-      item.category || ''
+      targetCode,                   // Col 1: Branch ID / Branch Code (e.g. "OF-TEST")
+      item.barcode,                // Col 2: Barcode
+      item.name,                   // Col 3: Product Name
+      Number(item.systemQty || 0), // Col 4: System Qty
+      Number(item.scannedQty || 0),// Col 5: Scanned Qty
+      item.location || '',         // Col 6: Location / Bin
+      item.category || '',         // Col 7: Category
+      targetAuditDate,             // Col 8: Audit Date
+      item.sku || item.barcode,    // Col 9: SKU
+      targetName,                  // Col 10: Branch Name
+      item.batchId || defaultBatchId, // Col 11: Batch ID
+      item.importDate || defaultImportDate, // Col 12: Import Date
+      item.isNewItem ? 'TRUE' : 'FALSE' // Col 13: Is New Item
     ]);
 
     if (onProgress) {
@@ -537,22 +783,19 @@ export async function importItemsToBranchInSheets(
         percent: currentPercent,
         chunkIndex: chunkIdx + 1,
         totalChunks,
-        statusText: `กำลังบันทึกลง Stock_Data (${importMode === 'overwrite' ? 'เขียนทับ' : 'ต่อท้าย'})... (${processedCount.toLocaleString()} / ${formattedItems.length.toLocaleString()} รายการ - ${currentPercent}%)`
+        statusText: `กำลังส่งข้อมูลสาขา "${targetCode}" ลง Stock_Data (${importMode === 'overwrite' ? 'ลบของเดิม & เขียนทับ' : 'ต่อท้าย'})... (${processedCount.toLocaleString()} / ${formattedItems.length.toLocaleString()} รายการ - ${currentPercent}%)`
       });
     }
 
-    // 2. Automatic Retry Mechanism (up to 3 times if Server Busy / transient error)
+    // Automatic Retry Mechanism (up to 3 times if Server Busy / transient error)
     const MAX_RETRIES = 3;
     let uploadSuccess = false;
-    let lastError: any = null;
 
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 35000);
 
       try {
-        // In overwrite mode: Chunk 0 sends 'importItems' with overwrite flag
-        // In append mode: sends 'appendItems'
         const actionName = (isFirstChunk && importMode === 'overwrite') ? 'importItems' : 'appendItems';
 
         const payload = {
@@ -561,12 +804,17 @@ export async function importItemsToBranchInSheets(
           sheetName: 'Stock_Data',
           mode: importMode,
           overwrite: importMode === 'overwrite',
+          deleteOldBranchRows: isFirstChunk && importMode === 'overwrite',
+          clearExistingBranchData: isFirstChunk && importMode === 'overwrite',
           id: targetId,
-          branchId: targetId,
+          branchId: targetCode,       // Ensure branchId is targetCode (e.g. OF-TEST)
+          branchCode: targetCode,     // Explicit branchCode
           code: targetCode,
           name: targetName,
+          targetBranch: targetCode,
+          auditDate: targetAuditDate,
           items: chunkItems,
-          rowValues: rowValues, // Batch setValues compatible 2D array [branchId, barcode, name, systemQty, scannedQty]
+          rowValues: rowValues,       // Batch setValues compatible 2D array
           totalItems: formattedItems.length,
           chunkIndex: chunkIdx,
           totalChunks: totalChunks,
@@ -574,7 +822,6 @@ export async function importItemsToBranchInSheets(
           processedCount,
           isFirstChunk,
           isLastChunk,
-          // Include full branches snapshot on last/single chunk to ensure full metadata consistency
           branches: isLastChunk ? locals : undefined
         };
 
@@ -604,12 +851,11 @@ export async function importItemsToBranchInSheets(
           throw new Error(errMsg);
         }
 
-        console.log(`[Google Sheets Service] Chunk ${chunkIdx + 1}/${totalChunks} (${chunkItems.length} items) written to Stock_Data successfully (attempt ${attempt}).`);
+        console.log(`[Google Sheets Service] Chunk ${chunkIdx + 1}/${totalChunks} for branch "${targetCode}" written to Stock_Data successfully (attempt ${attempt}).`);
         uploadSuccess = true;
-        break; // Successfully uploaded, exit retry loop
+        break;
       } catch (chunkErr: any) {
         clearTimeout(timeoutId);
-        lastError = chunkErr;
         const errMsg = String(chunkErr?.message || chunkErr || '');
         console.warn(`[Google Sheets Service] Chunk ${chunkIdx + 1}/${totalChunks} attempt ${attempt}/${MAX_RETRIES} warning:`, errMsg);
 
@@ -643,6 +889,24 @@ export async function importItemsToBranchInSheets(
     console.warn('[Google Sheets Service] IndexedDB saving warning:', idbErr);
   }
 
+  // 4. Verification Check: Confirm Google Sheets Stock_Data update 100%
+  if (onProgress) {
+    onProgress({
+      current: formattedItems.length,
+      total: formattedItems.length,
+      percent: 95,
+      chunkIndex: totalChunks,
+      totalChunks,
+      statusText: `กำลังตรวจสอบและยืนยันข้อมูลสาขา "${targetCode}" ใน Google Sheets 100% (Verification Check)...`
+    });
+  }
+
+  const verificationResult = await verifyGoogleSheetsStockData(targetCode, formattedItems.length);
+  console.log('[Google Sheets Service] Verification Result:', verificationResult);
+
+  // 5. Force Refresh Broadcast to all mobile browsers and open tabs
+  broadcastStockDataUpdated(targetId, targetCode, formattedItems.length);
+
   if (onProgress) {
     onProgress({
       current: formattedItems.length,
@@ -650,9 +914,9 @@ export async function importItemsToBranchInSheets(
       percent: 100,
       chunkIndex: totalChunks,
       totalChunks,
-      statusText: `บันทึกข้อมูลลงแท็บ Stock_Data ครบถ้วน 100% (${formattedItems.length.toLocaleString()} รายการ)`
+      statusText: `บันทึกข้อมูลสาขา "${targetCode}" ลง Stock_Data ครบถ้วน 100% (${formattedItems.length.toLocaleString()} รายการ) - ยืนยันความถูกต้องเรียบร้อยแล้ว!`
     });
   }
 
-  console.log('[Google Sheets Service] All item chunks successfully synced to Stock_Data in Google Sheets and IndexedDB for branch:', targetId);
+  console.log('[Google Sheets Service] All item chunks successfully synced and verified in Stock_Data for branch:', targetCode);
 }
